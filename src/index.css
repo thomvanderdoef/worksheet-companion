@@ -1,12 +1,17 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Outfit", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Quicksand", ui-sans-serif, system-ui, sans-serif;
+  --color-primary: #0069E4;
+  --color-primary-dark: #0055b8;
+  --color-surface: #E9E9E9;
+  --color-gray-btn: #A0A0A0;
+  --color-cool-gray: #B0BED3;
 }
 
 @layer base {
   body {
-    @apply antialiased;
+    @apply antialiased bg-surface;
   }
 }
