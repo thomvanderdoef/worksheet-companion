@@ -1,0 +1,5 @@
+{
+  "name": "SmartPaper: Student Feedback Assistant",
+  "description": "An AI-powered assistant that automatically scans student worksheets via camera and provides instant feedback.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
