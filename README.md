@@ -1,5 +1,8 @@
 # SmartPaper: Student Feedback Assistant
 
+<img width="965" height="809" alt="image" src="https://github.com/user-attachments/assets/50942ad7-824d-44fa-8ced-d9bcdb27ab9c" />
+
+
 SmartPaper is a React + Vite prototype for guiding a student through a worksheet capture flow and generating friendly AI feedback from the completed sheet.
 
 The current app follows a 4-step Figma-inspired experience:
