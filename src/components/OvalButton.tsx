@@ -6,6 +6,7 @@ interface OvalButtonProps {
   variant?: 'primary' | 'secondary' | 'disabled';
   onClick?: () => void;
   disabled?: boolean;
+  className?: string;
 }
 
 export const OvalButton: FC<OvalButtonProps> = ({
@@ -14,38 +15,60 @@ export const OvalButton: FC<OvalButtonProps> = ({
   variant = 'primary',
   onClick,
   disabled = false,
+  className = '',
 }) => {
-  const surface = {
-    primary:
-      'bg-primary text-white border-transparent',
-    secondary:
-      'bg-white text-primary border-cool-gray',
-    disabled:
-      'bg-gray-btn text-white border-transparent',
+  const isInteractive = !disabled && Boolean(onClick);
+  const palette = {
+    primary: {
+      shell: 'bg-gray-btn',
+      face: 'bg-student-primary text-white border-transparent hover:bg-student-primary-dark-1',
+    },
+    secondary: {
+      shell: 'bg-gray-btn',
+      face: 'bg-white text-student-primary border-student-cool-gray-light-1 hover:bg-student-primary-light-3',
+    },
+    disabled: {
+      shell: 'bg-gray-btn',
+      face: 'bg-white text-student-cool-gray-dark-1 border-student-cool-gray-light-1',
+    },
   }[disabled ? 'disabled' : variant];
 
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex flex-col items-center"
+      tabIndex={isInteractive ? 0 : -1}
+      className={[
+        'k1-focus-ring group inline-flex align-middle',
+        isInteractive ? 'cursor-pointer' : disabled ? 'cursor-not-allowed' : 'cursor-default',
+      ].join(' ')}
     >
-      <div className="flex flex-col h-[68px] items-center justify-center">
-        <div className="bg-gray-btn flex flex-col h-[60px] items-center justify-end rounded-[30px]">
-          <div className="flex flex-col h-[60px] items-center justify-center rounded-[30px]">
-            <div
-              className={`flex flex-1 items-center justify-center gap-[9px] min-h-0 min-w-0 px-9 rounded-[30px] border-[2.25px] border-solid font-bold text-[32px] leading-[50px] transition-transform active:scale-95 ${surface}`}
-            >
-              {icon && (
-                <span className="shrink-0 w-9 h-9 flex items-center justify-center">
-                  {icon}
-                </span>
-              )}
-              <span className="whitespace-nowrap">{label}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <span
+        className={[
+          'relative grid h-[68px] w-fit max-w-full rounded-full',
+          className,
+        ].join(' ')}
+      >
+        <span
+          aria-hidden="true"
+          className={`col-start-1 row-start-1 mt-[8px] h-[60px] rounded-full ${palette.shell}`}
+        />
+        <span
+          className={[
+            'col-start-1 row-start-1 inline-flex h-[60px] items-center justify-center gap-[9px] rounded-full border-[2.25px] px-9 text-[32px] font-bold leading-[50px] whitespace-nowrap transition-all duration-100 justify-self-stretch',
+            palette.face,
+            isInteractive ? 'group-hover:-translate-y-px group-active:translate-y-[8px]' : '',
+          ].join(' ')}
+        >
+          {icon ? (
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center">
+              {icon}
+            </span>
+          ) : null}
+          <span>{label}</span>
+        </span>
+      </span>
     </button>
   );
 };

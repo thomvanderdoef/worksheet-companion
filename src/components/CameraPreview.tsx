@@ -14,6 +14,7 @@ interface CameraPreviewProps {
   status: string;
   captureRequestNonce: number;
   triggerAutoCapture: number;
+  className?: string;
   onFrame?: (base64Jpeg: string) => void;
   onAutoCapture: (payload: AutoCapturePayload) => void;
   onStatusChange: (status: string) => void;
@@ -28,6 +29,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   status,
   captureRequestNonce,
   triggerAutoCapture,
+  className,
   onFrame,
   onAutoCapture,
   onStatusChange,
@@ -139,13 +141,13 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   }, [captureRequestNonce, isCameraReady, isCapturing, onAutoCapture]);
 
   return (
-    <div className="relative w-full max-w-2xl mx-auto aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white/10">
+    <div className={['relative mx-auto h-full w-full overflow-hidden rounded-[14px] bg-black', className ?? ''].join(' ')}>
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="w-full h-full object-cover"
+        className="h-full w-full object-cover"
       />
       <canvas ref={captureCanvasRef} className="hidden" />
       <canvas ref={frameCanvasRef} className="hidden" />
@@ -156,26 +158,26 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 pointer-events-none"
+            className="pointer-events-none absolute inset-0"
           >
             <div
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[85%] w-auto max-w-[calc(100%-2rem)] aspect-[8.5/11] rounded-xl border-[3px] border-white/60 box-border"
+              className="absolute inset-[7%] box-border rounded-[12px] border-[3px] border-white/80"
             >
               <motion.div
-                animate={{ top: ['6%', '94%', '6%'] }}
+                animate={{ top: ['8%', '92%', '8%'] }}
                 transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
-                className="absolute left-2 right-2 h-1 bg-white/50 shadow-[0_0_15px_rgba(255,255,255,0.55)] z-10 rounded-full"
+                className="absolute left-3 right-3 z-10 h-1 rounded-full bg-white/70 shadow-[0_0_10px_rgba(255,255,255,0.6)]"
               />
             </div>
 
-            <div className="absolute bottom-12 left-0 right-0 flex justify-center">
+            <div className="absolute inset-x-0 bottom-4 flex justify-center px-4">
               <motion.div
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
-                className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full border border-white/20 flex items-center gap-3"
+                className="k1-status-chip flex max-w-[calc(100%-1.5rem)] items-center gap-2 px-4 py-2 text-center"
               >
-                <Loader2 className="w-4 h-4 text-white animate-spin" />
-                <span className="text-white font-medium text-sm">{status}</span>
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-student-primary" />
+                <span className="text-xs font-semibold text-text-primary sm:text-sm">{status}</span>
               </motion.div>
             </div>
           </motion.div>
@@ -183,11 +185,11 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
       </AnimatePresence>
 
       {isFinished && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="text-center text-white p-8">
-            <CheckCircle2 className="w-16 h-16 text-green-400 mx-auto mb-4" />
-            <h3 className="text-2xl font-bold mb-2">Work Captured!</h3>
-            <p className="text-white/70">Review your feedback below.</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-white/55 p-6 backdrop-blur-sm">
+          <div className="rounded-[20px] bg-white px-8 py-10 text-center shadow-[var(--shadow-raised)]">
+            <CheckCircle2 className="mx-auto mb-4 h-16 w-16 text-success" />
+            <h3 className="mb-2 text-2xl font-bold text-text-primary">Work Captured!</h3>
+            <p className="text-sm font-semibold text-text-secondary">Review your feedback below.</p>
           </div>
         </div>
       )}

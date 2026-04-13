@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import type { WorksheetQuestionContext } from "../content/worksheetSource";
 
 export type ScanPhase = "empty" | "completed";
 
@@ -31,6 +32,8 @@ export type ExpectedResponseType =
   | "unknown";
 
 export type ResponseLegibility = "clear" | "partially_clear" | "unclear";
+export type AnalysisConfidence = "high" | "medium" | "low";
+export type AnalysisVerdict = "correct" | "incorrect" | "uncertain" | "incomplete";
 
 export interface CaptureMetricsContext {
   captureMode: "auto" | "manual";
@@ -83,6 +86,27 @@ export interface StudentResponse {
   notes?: string;
 }
 
+export interface ResponseInsight {
+  questionRef?: string;
+  promptAnchor: string;
+  expectedAnswer?: string;
+  verdict: AnalysisVerdict;
+  confidence: AnalysisConfidence;
+  likelyMisconception?: string;
+  evidence?: string;
+  studentFeedback: string;
+  teacherNote?: string;
+}
+
+export interface WorksheetFeedbackAnalysis {
+  responseInsights: ResponseInsight[];
+  strengths: string[];
+  nextSteps: string[];
+  caution?: string;
+  textFeedback: string;
+  voiceFeedback: string;
+}
+
 export interface CompletedWorksheetData {
   studentName?: string;
   responses: StudentResponse[];
@@ -94,6 +118,7 @@ export interface CompletedWorksheetData {
   visualWorkSummary?: string;
   feedback?: string;
   score?: string;
+  analysis?: WorksheetFeedbackAnalysis;
 }
 
 export interface ScanIssue {
@@ -118,7 +143,27 @@ interface ImagePayload {
 interface ExtractionContext {
   subject?: string;
   emptyWorksheet?: EmptyWorksheetData;
+  answerKey?: WorksheetQuestionContext[];
   metrics?: CaptureMetricsContext;
+}
+
+interface ResponseInsightItem {
+  questionRef?: string;
+  verdict?: string;
+  confidence?: string;
+  likelyMisconception?: string;
+  evidence?: string;
+  studentFeedback?: string;
+  teacherNote?: string;
+}
+
+interface FeedbackAnalysisResponse {
+  responseInsights?: ResponseInsightItem[];
+  strengths?: string[];
+  nextSteps?: string[];
+  caution?: string;
+  textFeedback?: string;
+  voiceFeedback?: string;
 }
 
 interface EmptyQuestionResponse {
@@ -381,6 +426,72 @@ const COMPLETED_RESPONSE_SCHEMA = {
   required: ["outcome"],
 } as const;
 
+const FEEDBACK_ANALYSIS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    responseInsights: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          questionRef: {
+            type: Type.STRING,
+            description: "The question ID from the provided answer key.",
+          },
+          verdict: {
+            type: Type.STRING,
+            enum: ["correct", "incorrect", "uncertain", "incomplete"],
+          },
+          confidence: {
+            type: Type.STRING,
+            enum: ["high", "medium", "low"],
+          },
+          likelyMisconception: {
+            type: Type.STRING,
+            description: "Likely misconception when the evidence supports one.",
+          },
+          evidence: {
+            type: Type.STRING,
+            description: "Short evidence-based explanation grounded in the visible work.",
+          },
+          studentFeedback: {
+            type: Type.STRING,
+            description: "One short, warm, specific coaching sentence for this question.",
+          },
+          teacherNote: {
+            type: Type.STRING,
+            description: "A short internal note about uncertainty or what to check next.",
+          },
+        },
+        required: ["questionRef", "verdict", "confidence", "studentFeedback"],
+      },
+    },
+    strengths: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Specific strengths visible across the worksheet.",
+    },
+    nextSteps: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Specific, student-friendly next steps.",
+    },
+    caution: {
+      type: Type.STRING,
+      description: "A short caution when the scan is partial or uncertain.",
+    },
+    textFeedback: {
+      type: Type.STRING,
+      description: "2-3 sentences of specific on-screen feedback for the student.",
+    },
+    voiceFeedback: {
+      type: Type.STRING,
+      description: "1-2 short sentences to read aloud exactly to the student.",
+    },
+  },
+  required: ["responseInsights", "strengths", "nextSteps", "textFeedback", "voiceFeedback"],
+} as const;
+
 export class GeminiWorksheetService {
   private ai: GoogleGenAI;
 
@@ -465,7 +576,15 @@ export class GeminiWorksheetService {
       console.error("Failed to parse Gemini extraction response:", error, response.text);
     }
 
-    return this.normalizeCompletedResponse(parsed, context);
+    const normalized = this.normalizeCompletedResponse(parsed, context);
+    if (normalized.outcome !== "captured") {
+      return normalized;
+    }
+
+    return {
+      outcome: "captured",
+      data: await this.enrichCompletedWorksheet(normalized.data, context),
+    };
   }
 
   private buildPrompt(phase: "empty", context?: { metrics?: CaptureMetricsContext }): string;
@@ -509,6 +628,9 @@ export class GeminiWorksheetService {
     const worksheetReference = completedContext?.emptyWorksheet
       ? this.buildWorksheetReference(completedContext.emptyWorksheet)
       : "";
+    const answerKeyReference = completedContext?.answerKey?.length
+      ? this.buildAnswerKeyReference(completedContext.answerKey)
+      : "";
     const subjectLine = completedContext?.subject
       ? `Known worksheet subject: ${completedContext.subject}.`
       : "";
@@ -534,6 +656,7 @@ export class GeminiWorksheetService {
       "Add an optional `score`.",
       subjectLine,
       worksheetReference,
+      answerKeyReference,
       "If the worksheet image hides or cuts off any important response area, return outcome='need_better_view'.",
       "If the photo is not readable enough, provide a short kid-friendly `message` such as 'Hold it steadier' or 'I can only see part of the page'.",
     ]
@@ -600,9 +723,13 @@ export class GeminiWorksheetService {
     if (response.outcome === "captured") {
       const responses = this.ensureQuestionCoverage(
         context?.emptyWorksheet,
+        context?.answerKey,
         this.normalizeStudentResponses(response.responses)
       );
       const unmatchedMarks = this.normalizeStringArray(response.unmatchedMarks);
+      const missingResponseAreas = this.normalizeStringArray(response.missingResponseAreas);
+      const capturedPortionSummary = response.capturedPortionSummary?.trim();
+      const hasPartialCapture = missingResponseAreas.length > 0 || Boolean(capturedPortionSummary);
 
       if (responses.length === 0 && unmatchedMarks.length === 0) {
         return this.needBetterView("completed", "other", "I need a clearer picture of your answers.");
@@ -614,9 +741,9 @@ export class GeminiWorksheetService {
           studentName: response.studentName?.trim(),
           responses,
           unmatchedMarks,
-          isGradingSafe: response.isGradingSafe !== false,
-          missingResponseAreas: this.normalizeStringArray(response.missingResponseAreas),
-          capturedPortionSummary: response.capturedPortionSummary?.trim(),
+          isGradingSafe: response.isGradingSafe === true || (!hasPartialCapture && response.isGradingSafe !== false),
+          missingResponseAreas,
+          capturedPortionSummary,
           completionNotes: response.completionNotes?.trim(),
           visualWorkSummary: response.visualWorkSummary?.trim(),
           feedback: response.feedback?.trim() || "Nice work. I captured your worksheet.",
@@ -630,6 +757,209 @@ export class GeminiWorksheetService {
       this.normalizeReason(response.reason),
       response.message?.trim() || "Hold the worksheet steady so I can read it."
     );
+  }
+
+  private async enrichCompletedWorksheet(
+    worksheet: CompletedWorksheetData,
+    context?: ExtractionContext
+  ): Promise<CompletedWorksheetData> {
+    const analysis = await this.analyzeCompletedWorksheet(worksheet, context);
+
+    return {
+      ...worksheet,
+      analysis,
+    };
+  }
+
+  private async analyzeCompletedWorksheet(
+    worksheet: CompletedWorksheetData,
+    context?: ExtractionContext
+  ): Promise<WorksheetFeedbackAnalysis> {
+    const deterministicInsights = this.buildDeterministicInsights(worksheet, context?.answerKey);
+    if (!context?.answerKey?.length) {
+      return this.buildFallbackAnalysis(worksheet, deterministicInsights);
+    }
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ text: this.buildAnalysisPrompt(worksheet, context.answerKey, deterministicInsights) }],
+        config: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: FEEDBACK_ANALYSIS_SCHEMA,
+        },
+      });
+
+      let parsed: FeedbackAnalysisResponse = {};
+      try {
+        parsed = JSON.parse(response.text ?? "{}") as FeedbackAnalysisResponse;
+      } catch (error) {
+        console.error("Failed to parse Gemini feedback analysis:", error, response.text);
+      }
+
+      return this.normalizeFeedbackAnalysis(parsed, worksheet, deterministicInsights);
+    } catch (error) {
+      console.error("Completed worksheet analysis failed:", error);
+      return this.buildFallbackAnalysis(worksheet, deterministicInsights);
+    }
+  }
+
+  private buildAnalysisPrompt(
+    worksheet: CompletedWorksheetData,
+    answerKey: WorksheetQuestionContext[],
+    deterministicInsights: ResponseInsight[]
+  ): string {
+    const lines = [
+      "You are reviewing early elementary student math work after the image has already been transcribed into structured data.",
+      "Use only the answer key, extracted responses, and visible-work notes provided below.",
+      "Only mark a response as correct or incorrect when the extracted answer is clear enough and the evidence strongly supports it.",
+      "When handwriting is unclear, the page is partial, or the evidence is incomplete, use verdict='uncertain' or verdict='incomplete'.",
+      "If you mention a misconception, keep it grounded in the visible work and avoid overclaiming.",
+      "Keep every `studentFeedback` sentence warm, specific, and helpful for a young student.",
+      "`textFeedback` should be 2-3 specific sentences for the finished screen.",
+      "`voiceFeedback` should be 1-2 short sentences that can be read aloud exactly.",
+      worksheet.capturedPortionSummary
+        ? `Visible portion summary: ${worksheet.capturedPortionSummary}`
+        : "Visible portion summary: full worksheet appears visible.",
+      worksheet.missingResponseAreas.length > 0
+        ? `Missing response areas: ${worksheet.missingResponseAreas.join("; ")}`
+        : "Missing response areas: none reported.",
+      worksheet.visualWorkSummary ? `Visual work summary: ${worksheet.visualWorkSummary}` : "",
+      worksheet.completionNotes ? `Completion notes: ${worksheet.completionNotes}` : "",
+      "Answer key and extracted responses:",
+    ].filter(Boolean);
+
+    deterministicInsights.forEach((insight) => {
+      const response = worksheet.responses.find((item) => {
+        if (insight.questionRef && item.questionRef === insight.questionRef) {
+          return true;
+        }
+
+        return item.promptAnchor.toLowerCase() === insight.promptAnchor.toLowerCase();
+      });
+      const key = answerKey.find((item) => item.questionRef === insight.questionRef);
+
+      lines.push(
+        [
+          `Question ${insight.questionRef || response?.questionRef || "unknown"}:`,
+          key ? `Prompt: ${key.prompt}` : `Prompt anchor: ${insight.promptAnchor}`,
+          key?.expectedAnswer ? `Expected answer: ${key.expectedAnswer}` : "",
+          key?.skillTag ? `Skill tag: ${key.skillTag}` : "",
+          key?.misconceptionHints?.length
+            ? `Possible misconception hints: ${key.misconceptionHints.join(" | ")}`
+            : "",
+          `Student answer: ${response?.studentAnswer || "(blank)"}`,
+          `Answered: ${response?.answered ? "yes" : "no"}`,
+          `Legibility: ${response?.legibility || "unclear"}`,
+          response?.studentWorkDescription
+            ? `Visible work: ${response.studentWorkDescription}`
+            : "Visible work: none noted.",
+          response?.notes ? `Extraction notes: ${response.notes}` : "",
+          `Deterministic check: verdict=${insight.verdict}, confidence=${insight.confidence}.`,
+          insight.evidence ? `Deterministic evidence: ${insight.evidence}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+    });
+
+    return lines.join("\n");
+  }
+
+  private normalizeFeedbackAnalysis(
+    response: FeedbackAnalysisResponse,
+    worksheet: CompletedWorksheetData,
+    deterministicInsights: ResponseInsight[]
+  ): WorksheetFeedbackAnalysis {
+    const insightsByRef = new Map(
+      (response.responseInsights ?? [])
+        .filter((item): item is ResponseInsightItem & { questionRef: string } => Boolean(item.questionRef))
+        .map((item) => [item.questionRef, item])
+    );
+
+    const responseInsights = deterministicInsights.map((fallbackInsight) => {
+      const parsed = fallbackInsight.questionRef
+        ? insightsByRef.get(fallbackInsight.questionRef)
+        : undefined;
+
+      return {
+        ...fallbackInsight,
+        verdict: this.normalizeAnalysisVerdict(parsed?.verdict, fallbackInsight.verdict),
+        confidence: this.normalizeAnalysisConfidence(parsed?.confidence, fallbackInsight.confidence),
+        likelyMisconception: parsed?.likelyMisconception?.trim() || fallbackInsight.likelyMisconception,
+        evidence: parsed?.evidence?.trim() || fallbackInsight.evidence,
+        studentFeedback: parsed?.studentFeedback?.trim() || fallbackInsight.studentFeedback,
+        teacherNote: parsed?.teacherNote?.trim() || fallbackInsight.teacherNote,
+      };
+    });
+
+    const fallback = this.buildFallbackAnalysis(worksheet, responseInsights);
+    const strengths = this.normalizeStringArray(response.strengths).slice(0, 3);
+    const nextSteps = this.normalizeStringArray(response.nextSteps).slice(0, 3);
+
+    return {
+      responseInsights,
+      strengths: strengths.length > 0 ? strengths : fallback.strengths,
+      nextSteps: nextSteps.length > 0 ? nextSteps : fallback.nextSteps,
+      caution: response.caution?.trim() || fallback.caution,
+      textFeedback: response.textFeedback?.trim() || fallback.textFeedback,
+      voiceFeedback: response.voiceFeedback?.trim() || fallback.voiceFeedback,
+    };
+  }
+
+  private buildFallbackAnalysis(
+    worksheet: CompletedWorksheetData,
+    responseInsights: ResponseInsight[]
+  ): WorksheetFeedbackAnalysis {
+    const answeredCount = worksheet.responses.filter((response) => response.answered).length;
+    const totalCount = worksheet.responses.length;
+    const correctHighConfidence = responseInsights.filter(
+      (insight) => insight.verdict === "correct" && insight.confidence === "high"
+    );
+    const incorrectHighConfidence = responseInsights.filter(
+      (insight) => insight.verdict === "incorrect" && insight.confidence === "high"
+    );
+    const showedWork = worksheet.responses.some((response) => Boolean(response.studentWorkDescription));
+    const caution = !worksheet.isGradingSafe || worksheet.missingResponseAreas.length > 0
+      ? "Some parts of the worksheet were hard to read, so this feedback stays cautious."
+      : undefined;
+    const strengths = [
+      answeredCount > 0 ? `You worked on ${answeredCount} of ${totalCount} questions.` : "",
+      showedWork ? "You showed your thinking on the page." : "",
+      correctHighConfidence[0]?.studentFeedback ?? "",
+    ].filter(Boolean);
+    const nextSteps = [
+      incorrectHighConfidence[0]?.studentFeedback ?? "",
+      caution ? "Keep your work dark and clear so it is easier to read next time." : "",
+    ].filter(Boolean);
+
+    const textFeedback = [
+      answeredCount > 0
+        ? `You completed ${answeredCount} of ${totalCount} questions and showed what you were thinking.`
+        : "You got started on the worksheet and showed me part of your thinking.",
+      incorrectHighConfidence[0]?.studentFeedback ||
+        worksheet.feedback ||
+        "Keep checking each problem one step at a time.",
+      caution || "",
+    ].filter(Boolean).join(" ");
+
+    const voiceFeedback = [
+      answeredCount > 0
+        ? `You worked on ${answeredCount} of ${totalCount} questions and showed your thinking.`
+        : "You got started and showed me some of your work.",
+      incorrectHighConfidence[0]?.studentFeedback ||
+        "Keep checking each problem one careful step at a time.",
+    ].join(" ");
+
+    return {
+      responseInsights,
+      strengths,
+      nextSteps,
+      caution,
+      textFeedback,
+      voiceFeedback,
+    };
   }
 
   private needBetterView(
@@ -782,6 +1112,140 @@ export class GeminiWorksheetService {
       .filter((value): value is string => Boolean(value));
   }
 
+  private normalizeAnalysisVerdict(
+    verdict: string | undefined,
+    fallback: AnalysisVerdict
+  ): AnalysisVerdict {
+    switch (verdict) {
+      case "correct":
+      case "incorrect":
+      case "uncertain":
+      case "incomplete":
+        return verdict;
+      default:
+        return fallback;
+    }
+  }
+
+  private normalizeAnalysisConfidence(
+    confidence: string | undefined,
+    fallback: AnalysisConfidence
+  ): AnalysisConfidence {
+    switch (confidence) {
+      case "high":
+      case "medium":
+      case "low":
+        return confidence;
+      default:
+        return fallback;
+    }
+  }
+
+  private buildDeterministicInsights(
+    worksheet: CompletedWorksheetData,
+    answerKey?: WorksheetQuestionContext[]
+  ): ResponseInsight[] {
+    if (!answerKey?.length) {
+      return worksheet.responses.map((response) => ({
+        questionRef: response.questionRef,
+        promptAnchor: response.promptAnchor,
+        verdict: response.answered ? "uncertain" : "incomplete",
+        confidence: response.answered && response.legibility !== "unclear" ? "medium" : "low",
+        evidence: response.studentWorkDescription || response.notes,
+        studentFeedback: response.answered
+          ? "You showed your thinking here. Keep checking each step carefully."
+          : "Try to give this problem a try so I can see your thinking.",
+        teacherNote: response.notes,
+      }));
+    }
+
+    return answerKey.map((question) => {
+      const response = worksheet.responses.find(
+        (item) =>
+          item.questionRef === question.questionRef ||
+          item.promptAnchor.toLowerCase() === question.prompt.toLowerCase()
+      );
+
+      if (!response || !response.answered || !response.studentAnswer.trim()) {
+        return {
+          questionRef: question.questionRef,
+          promptAnchor: question.prompt,
+          expectedAnswer: question.expectedAnswer,
+          verdict: "incomplete",
+          confidence: "high",
+          evidence: "No clear student answer was extracted for this problem.",
+          studentFeedback: "You can come back to this problem and show your work one step at a time.",
+          teacherNote: "No completed response was extracted for this question.",
+        };
+      }
+
+      if (response.legibility === "unclear") {
+        return {
+          questionRef: question.questionRef,
+          promptAnchor: response.promptAnchor,
+          expectedAnswer: question.expectedAnswer,
+          verdict: "uncertain",
+          confidence: "low",
+          likelyMisconception: question.misconceptionHints?.[0],
+          evidence: "The writing on this answer is too unclear to evaluate safely.",
+          studentFeedback: "I can see you worked on this one. Try writing the answer a little darker so it is easier to check.",
+          teacherNote: response.notes || "Legibility is too low for a safe correctness call.",
+        };
+      }
+
+      const expected = normalizeComparableAnswer(question.expectedAnswer);
+      const actual = normalizeComparableAnswer(response.studentAnswer);
+      const comparableAnswer = Boolean(expected) && Boolean(actual);
+      const isExactMatch = comparableAnswer && expected === actual;
+      const confidence: AnalysisConfidence =
+        response.legibility === "clear" ? "high" : "medium";
+
+      if (isExactMatch) {
+        return {
+          questionRef: question.questionRef,
+          promptAnchor: response.promptAnchor,
+          expectedAnswer: question.expectedAnswer,
+          verdict: "correct",
+          confidence,
+          evidence: `The extracted answer "${response.studentAnswer}" matches the expected answer "${question.expectedAnswer}".`,
+          studentFeedback: "Nice job checking this problem carefully and showing your work.",
+          teacherNote: response.studentWorkDescription,
+        };
+      }
+
+      return {
+        questionRef: question.questionRef,
+        promptAnchor: response.promptAnchor,
+        expectedAnswer: question.expectedAnswer,
+        verdict: comparableAnswer ? "incorrect" : "uncertain",
+        confidence: comparableAnswer ? confidence : "low",
+        likelyMisconception: question.misconceptionHints?.[0],
+        evidence: comparableAnswer
+          ? `The extracted answer "${response.studentAnswer}" does not match the expected answer "${question.expectedAnswer}".`
+          : "The extracted answer could not be matched to the expected answer confidently.",
+        studentFeedback: comparableAnswer
+          ? buildQuestionSpecificCoaching(question)
+          : "You showed your thinking here. Try checking the numbers one more careful step at a time.",
+        teacherNote: response.studentWorkDescription || response.notes,
+      };
+    });
+  }
+
+  private buildAnswerKeyReference(answerKey: WorksheetQuestionContext[]): string {
+    return [
+      "Known worksheet questions:",
+      ...answerKey.map((question) =>
+        [
+          `Question ${question.questionRef}: ${question.prompt}.`,
+          `Expected answer: ${question.expectedAnswer}.`,
+          question.skillTag ? `Skill: ${question.skillTag}.` : "",
+        ]
+          .filter(Boolean)
+          .join(" ")
+      ),
+    ].join(" ");
+  }
+
   private buildWorksheetReference(worksheet: EmptyWorksheetData): string {
     const lines: string[] = [
       "Reference worksheet structure:",
@@ -813,10 +1277,11 @@ export class GeminiWorksheetService {
 
   private ensureQuestionCoverage(
     worksheet: EmptyWorksheetData | undefined,
+    answerKey: WorksheetQuestionContext[] | undefined,
     responses: StudentResponse[]
   ): StudentResponse[] {
     if (!worksheet) {
-      return responses;
+      return answerKey?.length ? this.ensureAnswerKeyCoverage(answerKey, responses) : responses;
     }
 
     const responseByRef = new Map(
@@ -877,8 +1342,70 @@ export class GeminiWorksheetService {
 
     return [...expandedResponses, ...unmatchedResponses];
   }
+
+  private ensureAnswerKeyCoverage(
+    answerKey: WorksheetQuestionContext[],
+    responses: StudentResponse[]
+  ): StudentResponse[] {
+    const responseByRef = new Map(
+      responses
+        .filter((response) => response.questionRef)
+        .map((response) => [response.questionRef as string, response])
+    );
+
+    const expandedResponses = answerKey.map((question) => {
+      const byRef = responseByRef.get(question.questionRef);
+      if (byRef) {
+        return byRef;
+      }
+
+      const byPrompt = responses.find(
+        (response) => response.promptAnchor.toLowerCase() === question.prompt.toLowerCase()
+      );
+      if (byPrompt) {
+        return { ...byPrompt, questionRef: question.questionRef };
+      }
+
+      return {
+        questionRef: question.questionRef,
+        promptAnchor: question.prompt,
+        studentAnswer: "",
+        studentWorkDescription: "No visible response was extracted for this prompt.",
+        answered: false,
+        legibility: "unclear" as const,
+        notes: "No response was extracted for this prompt.",
+      };
+    });
+
+    const unmatchedResponses = responses.filter((response) => {
+      return !expandedResponses.some(
+        (candidate) =>
+          candidate.questionRef === response.questionRef ||
+          (candidate.promptAnchor === response.promptAnchor &&
+            candidate.studentAnswer === response.studentAnswer)
+      );
+    });
+
+    return [...expandedResponses, ...unmatchedResponses];
+  }
 }
 
 function isDefined<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function normalizeComparableAnswer(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9.-]+/g, "");
+}
+
+function buildQuestionSpecificCoaching(question: WorksheetQuestionContext): string {
+  if (question.questionRef === "Q1.1") {
+    return "You showed your work here. Check the tens and ones again to make sure they add up to the total.";
+  }
+
+  if (question.questionRef === "Q1.2") {
+    return "You are close. Solve the addition first, then write that total in the blank on the left side.";
+  }
+
+  return "You showed your thinking here. Try checking the numbers one more careful step at a time.";
 }

@@ -14,7 +14,7 @@ The current app follows a 4-step Figma-inspired experience:
 
 ## What It Does
 
-- Shows a worksheet preview with `Listen` and `Ready` actions
+- Shows a worksheet preview with `Listen`, language toggle, and `Ready` actions
 - Plays short Gemini-powered voice prompts during the flow
 - Uses the device camera for worksheet capture
 - Streams low-res frames to Gemini Live for capture guidance
@@ -88,10 +88,11 @@ src/
 
 ## Workflow Notes
 
-- The current worksheet preview is a placeholder asset in `src/assets/worksheet-placeholder.svg`.
-- The `Listen` button is currently a UI placeholder for a future Gemini TTS feature.
+- The current worksheet preview is a bundled worksheet asset in `src/assets/worksheet-placeholder.svg`.
+- `Listen` now generates a Gemini read-aloud script and plays Gemini audio in English or Spanish.
 - Guided capture reuses the existing Gemini Live camera workflow.
 - The old empty-worksheet scanning flow has been replaced by the new PDF/worksheet-preview-first flow.
+- Spoken worksheet segments are cached so a future PDF text-layer highlight pass can align audio to visible text.
 
 ## Build Notes
 
@@ -101,7 +102,5 @@ src/
 
 ## Next Improvements
 
-- Replace the placeholder worksheet asset with a real PNG
-- Implement the `Listen` button with Gemini speech generation
-- Add text highlighting while worksheet instructions are spoken
-- Support dynamic worksheet/image loading instead of a hardcoded asset
+- Add text highlighting while worksheet instructions are spoken on a true PDF text layer
+- Support dynamic worksheet/image/PDF loading instead of a single bundled asset

@@ -8,10 +8,14 @@ export interface GeminiLiveGuidanceCallbacks {
   onConnectionStateChange: (state: LiveConnectionState) => void;
 }
 
+interface GeminiLiveGuidanceOptions {
+  startPromptCycleOnConnect?: boolean;
+}
+
 const SYSTEM_INSTRUCTION = `You are a friendly classroom assistant helping a young student scan their worksheet with a camera. You are watching their camera feed.
 
 Your ONLY job is to guide them to hold up the worksheet properly:
-- When you first connect, say: "Hi! Hold up your worksheet and make sure I can see the whole page!"
+- When you first connect, say: "Hold up your worksheet and make sure I can see the whole page!"
 - If no paper is visible, say "Hold up your worksheet so I can see it!"
 - If you can see a worksheet and can read the printed text on it, call readyToCapture IMMEDIATELY. Be eager to capture!
 - Only give positioning advice if the paper is very blurry, mostly out of frame, or you truly cannot read the text.
@@ -40,6 +44,7 @@ export class GeminiLiveGuidanceService {
   private ai: GoogleGenAI;
   private session: Session | null = null;
   private callbacks: GeminiLiveGuidanceCallbacks;
+  private options: Required<GeminiLiveGuidanceOptions>;
   private state: LiveConnectionState = "disconnected";
   private audioContext: AudioContext | null = null;
   private nextPlayTime = 0;
@@ -49,9 +54,16 @@ export class GeminiLiveGuidanceService {
   private awaitingFinalTurn = false;
   private finalTurnTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(apiKey: string, callbacks: GeminiLiveGuidanceCallbacks) {
+  constructor(
+    apiKey: string,
+    callbacks: GeminiLiveGuidanceCallbacks,
+    options: GeminiLiveGuidanceOptions = {}
+  ) {
     this.ai = new GoogleGenAI({ apiKey });
     this.callbacks = callbacks;
+    this.options = {
+      startPromptCycleOnConnect: options.startPromptCycleOnConnect ?? true,
+    };
   }
 
   async connect(): Promise<void> {
@@ -271,10 +283,14 @@ export class GeminiLiveGuidanceService {
 
   private handleMessage(message: LiveServerMessage): void {
     if (message.setupComplete) {
-      console.log("[LiveGuidance] Setup complete, starting prompt cycle");
+      console.log("[LiveGuidance] Setup complete");
       this.clearConnectionTimer();
       this.setState("connected");
-      this.startPromptCycle();
+
+      if (this.options.startPromptCycleOnConnect) {
+        console.log("[LiveGuidance] Starting prompt cycle");
+        this.startPromptCycle();
+      }
       return;
     }
 
