@@ -7,19 +7,27 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 interface WorksheetPreviewProps {
   source: WorksheetSource;
+  loadingLabel: string;
+  fallbackLabel: string;
   overlay?: ReactNode;
   className?: string;
 }
 
 export function WorksheetPreview({
   source,
+  loadingLabel,
+  fallbackLabel,
   overlay,
   className,
 }: WorksheetPreviewProps) {
   return (
     <div className={['k1-paper-card relative aspect-[203/259] h-[530px] overflow-hidden bg-white', className ?? ''].join(' ')}>
       {source.assetKind === 'pdf' ? (
-        <PdfWorksheetPage source={source} />
+        <PdfWorksheetPage
+          source={source}
+          loadingLabel={loadingLabel}
+          fallbackLabel={fallbackLabel}
+        />
       ) : (
         <img
           src={source.previewSrc}
@@ -37,7 +45,15 @@ export function WorksheetPreview({
   );
 }
 
-function PdfWorksheetPage({ source }: { source: WorksheetSource }) {
+function PdfWorksheetPage({
+  source,
+  loadingLabel,
+  fallbackLabel,
+}: {
+  source: WorksheetSource;
+  loadingLabel: string;
+  fallbackLabel: string;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [pageWidth, setPageWidth] = useState(0);
   const [useNativeFallback, setUseNativeFallback] = useState(false);
@@ -83,8 +99,8 @@ function PdfWorksheetPage({ source }: { source: WorksheetSource }) {
       ) : pageWidth > 0 ? (
         <Document
           file={{ url: source.previewSrc }}
-          loading={<PreviewMessage>Loading worksheet...</PreviewMessage>}
-          error={<PreviewMessage>Falling back to PDF preview...</PreviewMessage>}
+          loading={<PreviewMessage>{loadingLabel}</PreviewMessage>}
+          error={<PreviewMessage>{fallbackLabel}</PreviewMessage>}
           onLoadError={(error) => {
             console.error('PDF preview failed, using native fallback:', error);
             setUseNativeFallback(true);
@@ -96,11 +112,11 @@ function PdfWorksheetPage({ source }: { source: WorksheetSource }) {
             width={pageWidth}
             renderAnnotationLayer={false}
             renderTextLayer={false}
-            loading={<PreviewMessage>Loading worksheet...</PreviewMessage>}
+            loading={<PreviewMessage>{loadingLabel}</PreviewMessage>}
           />
         </Document>
       ) : (
-        <PreviewMessage>Loading worksheet...</PreviewMessage>
+        <PreviewMessage>{loadingLabel}</PreviewMessage>
       )}
     </div>
   );

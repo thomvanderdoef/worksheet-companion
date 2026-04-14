@@ -1,4 +1,10 @@
 import { GoogleGenAI, Modality, Session, type LiveServerMessage } from "@google/genai";
+import {
+  buildLiveGuidancePrompt,
+  buildLiveGuidanceSystemInstruction,
+  getVoiceName,
+  type PrototypeLanguage,
+} from "../content/localization";
 
 export type LiveConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
@@ -10,22 +16,8 @@ export interface GeminiLiveGuidanceCallbacks {
 
 interface GeminiLiveGuidanceOptions {
   startPromptCycleOnConnect?: boolean;
+  language?: PrototypeLanguage;
 }
-
-const SYSTEM_INSTRUCTION = `You are a friendly classroom assistant helping a young student scan their worksheet with a camera. You are watching their camera feed.
-
-Your ONLY job is to guide them to hold up the worksheet properly:
-- When you first connect, say: "Hold up your worksheet and make sure I can see the whole page!"
-- If no paper is visible, say "Hold up your worksheet so I can see it!"
-- If you can see a worksheet and can read the printed text on it, call readyToCapture IMMEDIATELY. Be eager to capture!
-- Only give positioning advice if the paper is very blurry, mostly out of frame, or you truly cannot read the text.
-- Fingers holding the paper are totally fine.
-
-You should call readyToCapture within a few seconds of seeing a readable worksheet. Err on the side of capturing too early — the system will ask to try again if the image wasn't good enough.
-Speak in short, encouraging sentences a child can understand.
-Do NOT read or comment on the worksheet content. Stay focused on scanning.
-
-IMPORTANT: When the system sends you a message (not the student), follow its instructions. For example if it tells you the scan failed, relay that to the student in a friendly way.`;
 
 const READY_TO_CAPTURE_TOOL = {
   functionDeclarations: [
@@ -44,7 +36,10 @@ export class GeminiLiveGuidanceService {
   private ai: GoogleGenAI;
   private session: Session | null = null;
   private callbacks: GeminiLiveGuidanceCallbacks;
-  private options: Required<GeminiLiveGuidanceOptions>;
+  private options: {
+    startPromptCycleOnConnect: boolean;
+    language: PrototypeLanguage;
+  };
   private state: LiveConnectionState = "disconnected";
   private audioContext: AudioContext | null = null;
   private nextPlayTime = 0;
@@ -63,6 +58,7 @@ export class GeminiLiveGuidanceService {
     this.callbacks = callbacks;
     this.options = {
       startPromptCycleOnConnect: options.startPromptCycleOnConnect ?? true,
+      language: options.language ?? "en",
     };
   }
 
@@ -95,11 +91,11 @@ export class GeminiLiveGuidanceService {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: "Puck" },
+              prebuiltVoiceConfig: { voiceName: getVoiceName(this.options.language) },
             },
           },
           outputAudioTranscription: {},
-          systemInstruction: SYSTEM_INSTRUCTION,
+          systemInstruction: buildLiveGuidanceSystemInstruction(this.options.language),
           tools: [READY_TO_CAPTURE_TOOL],
         },
         callbacks: {
@@ -176,7 +172,7 @@ export class GeminiLiveGuidanceService {
     try {
       console.log("[LiveGuidance] Sending text prompt to trigger response");
       this.session.sendRealtimeInput({
-        text: "Look at the camera and guide me.",
+        text: buildLiveGuidancePrompt(this.options.language),
       });
     } catch {
       // session may have closed

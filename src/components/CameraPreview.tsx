@@ -12,6 +12,9 @@ interface CameraPreviewProps {
   isCapturing: boolean;
   isFinished?: boolean;
   status: string;
+  cameraAccessErrorLabel: string;
+  capturedTitle: string;
+  capturedSubtitle: string;
   captureRequestNonce: number;
   triggerAutoCapture: number;
   className?: string;
@@ -27,6 +30,9 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   isCapturing,
   isFinished,
   status,
+  cameraAccessErrorLabel,
+  capturedTitle,
+  capturedSubtitle,
   captureRequestNonce,
   triggerAutoCapture,
   className,
@@ -68,7 +74,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         }
       } catch (err) {
         console.error('Error accessing camera:', err);
-        onStatusChange('Camera access is needed to scan the worksheet.');
+        onStatusChange(cameraAccessErrorLabel);
       }
     }
 
@@ -83,7 +89,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
       streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     };
-  }, [onStatusChange]);
+  }, [cameraAccessErrorLabel, onStatusChange]);
 
   useEffect(() => {
     if (!isCapturing || !isCameraReady || !onFrame) {
@@ -188,8 +194,8 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         <div className="absolute inset-0 flex items-center justify-center bg-white/55 p-6 backdrop-blur-sm">
           <div className="rounded-[20px] bg-white px-8 py-10 text-center shadow-[var(--shadow-raised)]">
             <CheckCircle2 className="mx-auto mb-4 h-16 w-16 text-success" />
-            <h3 className="mb-2 text-2xl font-bold text-text-primary">Work Captured!</h3>
-            <p className="text-sm font-semibold text-text-secondary">Review your feedback below.</p>
+            <h3 className="mb-2 text-2xl font-bold text-text-primary">{capturedTitle}</h3>
+            <p className="text-sm font-semibold text-text-secondary">{capturedSubtitle}</p>
           </div>
         </div>
       )}

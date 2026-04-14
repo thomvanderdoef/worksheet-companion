@@ -1,6 +1,13 @@
 import { GoogleGenAI, Modality, Session, Type, type LiveServerMessage } from '@google/genai';
+import {
+  buildReadAloudPrompt,
+  buildReadAloudSpeechInstruction,
+  getPrototypeCopy,
+  getVoiceName,
+  type PrototypeLanguage,
+} from '../content/localization';
 
-export type WorksheetLanguage = 'en' | 'es';
+export type WorksheetLanguage = PrototypeLanguage;
 export type ReadAloudState = 'idle' | 'connecting' | 'speaking' | 'error';
 
 export interface WorksheetReadAloudScript {
@@ -95,7 +102,7 @@ export class GeminiWorksheetReadAloudService {
       throw new Error('Gemini did not return a usable read-aloud script.');
     }
 
-    const closingInstruction = buildClosingInstruction(params.language);
+    const closingInstruction = getPrototypeCopy(params.language).readAloud.closingInstruction;
 
     return {
       title: parsed.title?.trim() || 'Worksheet',
@@ -119,7 +126,7 @@ export class GeminiWorksheetReadAloudService {
     this.setState('connecting');
     this.connectionTimer = setTimeout(() => {
       if (this.state === 'connecting') {
-        this.handleFatalError('Read-aloud connection timed out.');
+        this.handleFatalError(getPrototypeCopy(script.language).readAloud.connectionTimedOut);
       }
     }, CONNECTION_TIMEOUT_MS);
 
@@ -132,11 +139,11 @@ export class GeminiWorksheetReadAloudService {
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
-                voiceName: script.language === 'es' ? 'Kore' : 'Puck',
+                voiceName: getVoiceName(script.language),
               },
             },
           },
-          systemInstruction: buildSpeechInstruction(script.language),
+          systemInstruction: buildReadAloudSpeechInstruction(script.language),
         },
         callbacks: {
           onopen: () => {},
@@ -144,7 +151,7 @@ export class GeminiWorksheetReadAloudService {
             this.handleMessage(message, script);
           },
           onerror: () => {
-            this.handleFatalError('Gemini read-aloud failed to connect.');
+            this.handleFatalError(getPrototypeCopy(script.language).readAloud.connectFailed);
           },
           onclose: () => {
             this.clearConnectionTimer();
@@ -155,7 +162,7 @@ export class GeminiWorksheetReadAloudService {
               if (this.hasStartedPlayback) {
                 this.finishPlayback();
               } else {
-                this.handleFatalError('Read-aloud connection closed early.');
+                this.handleFatalError(getPrototypeCopy(script.language).readAloud.closedEarly);
               }
             }
           },
@@ -163,7 +170,7 @@ export class GeminiWorksheetReadAloudService {
       });
     } catch (error) {
       console.error('Read-aloud live connection failed:', error);
-      this.handleFatalError('Unable to start worksheet audio.');
+      this.handleFatalError(getPrototypeCopy(script.language).readAloud.unableToStart);
     }
   }
 
@@ -195,12 +202,13 @@ export class GeminiWorksheetReadAloudService {
     if (message.setupComplete) {
       this.clearConnectionTimer();
       try {
+        const copy = getPrototypeCopy(script.language).readAloud;
         this.session?.sendRealtimeInput({
-          text: `Read this worksheet aloud exactly as written. Do not add commentary.\n\n${script.spokenText}`,
+          text: `${copy.readPrefix}\n\n${script.spokenText}`,
         });
       } catch (error) {
         console.error('Failed to send read-aloud prompt:', error);
-        this.handleFatalError('Unable to start worksheet audio.');
+        this.handleFatalError(getPrototypeCopy(script.language).readAloud.unableToStart);
       }
       return;
     }
@@ -226,7 +234,7 @@ export class GeminiWorksheetReadAloudService {
     }
 
     if (message.goAway) {
-      this.handleFatalError('Gemini asked to end the read-aloud session.');
+      this.handleFatalError(getPrototypeCopy(script.language).readAloud.goAway);
     }
   }
 
@@ -299,51 +307,4 @@ export class GeminiWorksheetReadAloudService {
       this.completionTimer = null;
     }
   }
-}
-
-function buildReadAloudPrompt(worksheetText: string, language: WorksheetLanguage): string {
-  const targetLanguage = language === 'es' ? 'Spanish' : 'English';
-
-  return [
-    `You are preparing a worksheet read-aloud for a young student in ${targetLanguage}.`,
-    'Use only the worksheet content provided below.',
-    'Keep the instructions faithful to the worksheet, but make the spoken delivery easy for a child to follow.',
-    'Do not greet the student. Start directly with the worksheet title or directions.',
-    'Read the worksheet title, directions, and each problem in order.',
-    'Do not solve the problems.',
-    'Do not add teacher commentary, extra introductions, or extra closings.',
-    `Return the final script entirely in ${targetLanguage}.`,
-    'Break the spoken script into short `spokenSegments` that could later be highlighted on screen.',
-    '',
-    'Worksheet source text:',
-    worksheetText,
-  ].join('\n');
-}
-
-function buildClosingInstruction(language: WorksheetLanguage): string {
-  if (language === 'es') {
-    return 'Haz clic en el boton de la siguiente diapositiva cuando estes listo para empezar.';
-  }
-
-  return 'Click the next slide button when you are ready to start.';
-}
-
-function buildSpeechInstruction(language: WorksheetLanguage): string {
-  if (language === 'es') {
-    return [
-      'You are reading a worksheet aloud to a young student.',
-      'Speak fully in Spanish.',
-      'Read the provided script exactly.',
-      'Do not add greetings, teacher commentary, explanations, or answers.',
-      'Use a warm, patient, child-friendly tone.',
-    ].join(' ');
-  }
-
-  return [
-    'You are reading a worksheet aloud to a young student.',
-    'Speak fully in English.',
-    'Read the provided script exactly.',
-    'Do not add greetings, teacher commentary, explanations, or answers.',
-    'Use a warm, patient, child-friendly tone.',
-  ].join(' ');
 }

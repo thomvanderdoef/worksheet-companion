@@ -22,6 +22,12 @@ import {
 import { OvalButton } from './components/OvalButton';
 import { ConfettiEffect } from './components/ConfettiEffect';
 import { WorksheetPreview } from './components/WorksheetPreview';
+import {
+  buildFeedbackSummaryText,
+  buildFeedbackVoicePromptText,
+  getPrototypeCopy,
+  type PrototypeLanguage,
+} from './content/localization';
 import { bundledWorksheetSource } from './content/worksheetSource';
 import {
   CompletedWorksheetData,
@@ -55,7 +61,7 @@ export default function App() {
   const [captureRequestNonce, setCaptureRequestNonce] = useState(0);
   const [triggerAutoCapture, setTriggerAutoCapture] = useState(0);
   const [liveConnectionState, setLiveConnectionState] = useState<LiveConnectionState>('disconnected');
-  const [worksheetLanguage, setWorksheetLanguage] = useState<WorksheetLanguage>('en');
+  const [worksheetLanguage, setWorksheetLanguage] = useState<PrototypeLanguage>('en');
   const [readAloudState, setReadAloudState] = useState<ReadAloudState>('idle');
   const [readAloudError, setReadAloudError] = useState<string | null>(null);
   const [readAloudScripts, setReadAloudScripts] = useState<
@@ -63,6 +69,15 @@ export default function App() {
   >({});
   const [showConfetti, setShowConfetti] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
+  const [localizedCompletedWorksheets, setLocalizedCompletedWorksheets] = useState<
+    Partial<Record<PrototypeLanguage, CompletedWorksheetData>>
+  >({});
+  const [feedbackLoadingByLanguage, setFeedbackLoadingByLanguage] = useState<
+    Partial<Record<PrototypeLanguage, boolean>>
+  >({});
+  const [feedbackRequestedByLanguage, setFeedbackRequestedByLanguage] = useState<
+    Partial<Record<PrototypeLanguage, boolean>>
+  >({});
 
   const serviceRef = useRef<GeminiWorksheetService | null>(null);
   const liveServiceRef = useRef<GeminiLiveGuidanceService | null>(null);
@@ -71,18 +86,24 @@ export default function App() {
   const isAnalyzingRef = useRef(false);
   const scanCooldownUntilRef = useRef(0);
   const languageMenuRef = useRef<HTMLDivElement | null>(null);
+  const feedbackLocalizationSessionRef = useRef(0);
 
   useEffect(() => {
     workflowStepRef.current = workflowStep;
   }, [workflowStep]);
 
+  useEffect(() => {
+    document.documentElement.lang = worksheetLanguage;
+    document.title = getPrototypeCopy(worksheetLanguage).appTitle;
+  }, [worksheetLanguage]);
+
   const getApiKey = useCallback(() => {
     const key = import.meta.env.VITE_GEMINI_API_KEY;
     if (!key) {
-      setStatus('API Key missing. Set VITE_GEMINI_API_KEY in .env.local');
+      setStatus(getPrototypeCopy(worksheetLanguage).apiKeyMissing);
     }
     return key as string | undefined;
-  }, []);
+  }, [worksheetLanguage]);
 
   const disconnectLive = useCallback(() => {
     if (liveServiceRef.current) {
@@ -119,8 +140,9 @@ export default function App() {
     return readAloudServiceRef.current;
   }, []);
 
-  const connectLive = useCallback((apiKey: string) => {
+  const connectLive = useCallback((apiKey: string, language: PrototypeLanguage = worksheetLanguage) => {
     disconnectLive();
+    const copy = getPrototypeCopy(language);
 
     const live = new GeminiLiveGuidanceService(apiKey, {
       onGuidanceText: (text: string) => {
@@ -136,64 +158,60 @@ export default function App() {
       onConnectionStateChange: (state: LiveConnectionState) => {
         setLiveConnectionState(state);
         if (state === 'connected') {
-          setStatus('Hold up your worksheet so I can see it!');
+          setStatus(copy.statuses.initialLiveGuidance);
         } else if (state === 'error') {
-          setStatus('Live guidance unavailable — tap Capture when ready.');
+          setStatus(copy.statuses.liveGuidanceUnavailable);
         }
       },
+    }, {
+      language,
     });
 
     liveServiceRef.current = live;
     live.connect().catch(() => {});
-  }, [disconnectLive]);
+  }, [disconnectLive, worksheetLanguage]);
 
-  const speakWorkingInstructions = useCallback((apiKey: string) => {
+  const speakWorkingInstructions = useCallback((apiKey: string, language: PrototypeLanguage = worksheetLanguage) => {
     disconnectLive();
+    const copy = getPrototypeCopy(language);
 
     const live = new GeminiLiveGuidanceService(apiKey, {
       onGuidanceText: () => {},
       onReadyToCapture: () => {},
       onConnectionStateChange: (state: LiveConnectionState) => {
         if (state === 'connected' && live === liveServiceRef.current) {
-          live.speakThenDisconnect(
-            'Tell the student in a cheerful, short way: ' +
-            '"Now grab your pencil and work on your worksheet. ' +
-            'When you\'re all done, come back and press the big blue Take Picture button ' +
-            'so I can see your work!" Keep it under 10 seconds.'
-          );
+          live.speakThenDisconnect(copy.prompts.working);
         }
       },
     }, {
       startPromptCycleOnConnect: false,
+      language,
     });
 
     liveServiceRef.current = live;
     live.connect().catch(() => {});
-  }, [disconnectLive]);
+  }, [disconnectLive, worksheetLanguage]);
 
-  const speakViewPdfInstructions = useCallback((apiKey: string) => {
+  const speakViewPdfInstructions = useCallback((apiKey: string, language: PrototypeLanguage = worksheetLanguage) => {
     disconnectLive();
+    const copy = getPrototypeCopy(language);
 
     const live = new GeminiLiveGuidanceService(apiKey, {
       onGuidanceText: () => {},
       onReadyToCapture: () => {},
       onConnectionStateChange: (state: LiveConnectionState) => {
         if (state === 'connected' && live === liveServiceRef.current) {
-          live.speakThenDisconnect(
-            'Tell the student in a cheerful, short way: ' +
-            '"Hi there, click the blue button to listen to the instructions for your worksheet. ' +
-            'Go to the next slide button when you\'re ready to start working on your worksheet." ' +
-            'Keep it under 10 seconds.'
-          );
+          live.speakThenDisconnect(copy.prompts.viewPdf);
         }
       },
     }, {
       startPromptCycleOnConnect: false,
+      language,
     });
 
     liveServiceRef.current = live;
     live.connect().catch(() => {});
-  }, [disconnectLive]);
+  }, [disconnectLive, worksheetLanguage]);
 
   useEffect(() => {
     if (workflowStep !== 'view_pdf') return;
@@ -201,8 +219,8 @@ export default function App() {
     const apiKey = getApiKey();
     if (!apiKey) return;
 
-    speakViewPdfInstructions(apiKey);
-  }, [workflowStep, getApiKey, speakViewPdfInstructions]);
+    speakViewPdfInstructions(apiKey, worksheetLanguage);
+  }, [workflowStep, getApiKey, speakViewPdfInstructions, worksheetLanguage]);
 
   const handleStart = useCallback(() => {
     setStatus('');
@@ -219,12 +237,15 @@ export default function App() {
     setCaptureRequestNonce(0);
     setTriggerAutoCapture(0);
     setLiveConnectionState('disconnected');
-    setWorksheetLanguage('en');
     setReadAloudState('idle');
     setReadAloudError(null);
     setReadAloudScripts({});
     setShowConfetti(false);
     setIsLanguageMenuOpen(false);
+    setLocalizedCompletedWorksheets({});
+    setFeedbackLoadingByLanguage({});
+    setFeedbackRequestedByLanguage({});
+    feedbackLocalizationSessionRef.current += 1;
     isAnalyzingRef.current = false;
     scanCooldownUntilRef.current = 0;
     serviceRef.current = null;
@@ -235,32 +256,37 @@ export default function App() {
     if (!apiKey) return;
 
     stopReadAloud();
-    serviceRef.current = new GeminiWorksheetService(apiKey);
+    serviceRef.current = new GeminiWorksheetService(apiKey, worksheetLanguage);
     setWorkflowStep('working');
-    speakWorkingInstructions(apiKey);
-  }, [getApiKey, speakWorkingInstructions, stopReadAloud]);
+    speakWorkingInstructions(apiKey, worksheetLanguage);
+  }, [getApiKey, speakWorkingInstructions, stopReadAloud, worksheetLanguage]);
 
   const handleTakePicture = useCallback(() => {
     const apiKey = getApiKey();
     if (!apiKey) return;
 
-    if (!serviceRef.current) {
-      serviceRef.current = new GeminiWorksheetService(apiKey);
-    }
-
+    serviceRef.current = new GeminiWorksheetService(apiKey, worksheetLanguage);
     setWorkflowStep('guided_capture');
-    setStatus('Connecting to live guidance...');
-    connectLive(apiKey);
-  }, [connectLive, getApiKey]);
+    setStatus(getPrototypeCopy(worksheetLanguage).statuses.connectingLiveGuidance);
+    connectLive(apiKey, worksheetLanguage);
+  }, [connectLive, getApiKey, worksheetLanguage]);
 
-  const handleCompletedExtractionResult = useCallback((result: CompletedWorksheetExtractionResult) => {
+  const handleCompletedExtractionResult = useCallback((
+    result: CompletedWorksheetExtractionResult,
+    language: PrototypeLanguage
+  ) => {
+    const copy = getPrototypeCopy(language);
     if (result.outcome === 'captured') {
+      feedbackLocalizationSessionRef.current += 1;
       setCompletedWorksheet(result.data);
+      setLocalizedCompletedWorksheets({ [language]: result.data });
+      setFeedbackLoadingByLanguage({});
+      setFeedbackRequestedByLanguage({ [language]: true });
       setWorkflowStep('finished');
-      setStatus('All done! Great work.');
+      setStatus(copy.statuses.allDone);
       setShowConfetti(true);
 
-      const voicePrompt = buildFeedbackVoicePrompt(result.data);
+      const voicePrompt = buildFeedbackVoicePrompt(result.data, language, true);
       if (liveServiceRef.current) {
         liveServiceRef.current.speakThenDisconnect(voicePrompt);
       } else {
@@ -269,19 +295,21 @@ export default function App() {
       return;
     }
 
-    setStatus("Almost! I couldn't read everything. Hold it up one more time!");
+    setStatus(copy.statuses.scanRetry);
     scanCooldownUntilRef.current = Date.now() + 3500;
     setWorkflowStep('guided_capture');
 
     liveServiceRef.current?.sendMessage(
-      "The scan didn't work. Tell the student in a friendly way: almost! I couldn't quite read everything. Let's try one more time — hold up the whole worksheet nice and steady."
+      copy.prompts.retryScan
     );
     liveServiceRef.current?.resumePrompts();
-  }, [disconnectLive]);
+  }, [disconnectLive, worksheetLanguage]);
 
   const handleAutoCapture = useCallback(async (payload: AutoCapturePayload) => {
     const currentStep = workflowStepRef.current;
     const currentService = serviceRef.current;
+    const currentLanguage = worksheetLanguage;
+    const copy = getPrototypeCopy(currentLanguage);
 
     if (!currentService || isAnalyzingRef.current) return;
     if (currentStep !== 'guided_capture') return;
@@ -293,7 +321,7 @@ export default function App() {
 
     try {
       setWorkflowStep('processing');
-      setStatus('Reading your answers...');
+      setStatus(copy.statuses.readingAnswers);
       const result = await currentService.extractCompletedWorksheet(
         {
           data: payload.base64,
@@ -303,23 +331,24 @@ export default function App() {
           subject: bundledWorksheetSource.subject,
           answerKey: bundledWorksheetSource.questionContexts,
           metrics: { captureMode: payload.captureMode },
+          language: currentLanguage,
         }
       );
-      handleCompletedExtractionResult(result);
+      handleCompletedExtractionResult(result, currentLanguage);
     } catch (error) {
       console.error('Worksheet extraction failed:', error);
-      setStatus("Oops, something went wrong. Let's try again!");
+      setStatus(copy.statuses.scanError);
       scanCooldownUntilRef.current = Date.now() + 3500;
       setWorkflowStep('guided_capture');
 
       liveServiceRef.current?.sendMessage(
-        "Something went wrong with the scan. Tell the student: oops, let me try that again — hold up your worksheet one more time!"
+        copy.prompts.scanError
       );
       liveServiceRef.current?.resumePrompts();
     } finally {
       isAnalyzingRef.current = false;
     }
-  }, [handleCompletedExtractionResult]);
+  }, [handleCompletedExtractionResult, worksheetLanguage]);
 
   const handleFrame = useCallback((base64Jpeg: string) => {
     liveServiceRef.current?.sendFrame(base64Jpeg);
@@ -331,7 +360,7 @@ export default function App() {
     }
   }, []);
 
-  const handleLanguageChange = useCallback((language: WorksheetLanguage) => {
+  const handleLanguageChange = useCallback((language: PrototypeLanguage) => {
     if (language === worksheetLanguage) {
       setIsLanguageMenuOpen(false);
       return;
@@ -346,7 +375,16 @@ export default function App() {
     setReadAloudError(null);
     setWorksheetLanguage(language);
     setIsLanguageMenuOpen(false);
-  }, [readAloudState, stopReadAloud, worksheetLanguage]);
+    serviceRef.current = null;
+
+    if (workflowStepRef.current === 'guided_capture') {
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+      if (apiKey) {
+        setStatus(getPrototypeCopy(language).statuses.connectingLiveGuidance);
+        connectLive(apiKey, language);
+      }
+    }
+  }, [connectLive, readAloudState, stopReadAloud, worksheetLanguage]);
 
   const handleListen = useCallback(async () => {
     if (readAloudState === 'connecting' || readAloudState === 'speaking') {
@@ -383,7 +421,7 @@ export default function App() {
     } catch (error) {
       console.error('Read-aloud failed:', error);
       stopReadAloud();
-      setReadAloudError('Unable to read the worksheet aloud right now.');
+      setReadAloudError(getPrototypeCopy(worksheetLanguage).statuses.readAloudUnavailable);
       setReadAloudState('error');
     }
   }, [
@@ -397,7 +435,8 @@ export default function App() {
   ]);
 
   const handleReplayFeedback = useCallback(() => {
-    if (!completedWorksheet) return;
+    const localizedWorksheet = localizedCompletedWorksheets[worksheetLanguage];
+    if (!localizedWorksheet || feedbackLoadingByLanguage[worksheetLanguage]) return;
 
     const apiKey = getApiKey();
     if (!apiKey) return;
@@ -410,49 +449,86 @@ export default function App() {
       onReadyToCapture: () => {},
       onConnectionStateChange: (state: LiveConnectionState) => {
         if (state === 'connected' && live === liveServiceRef.current) {
-          live.speakThenDisconnect(buildFeedbackVoicePrompt(completedWorksheet));
+          live.speakThenDisconnect(
+            buildFeedbackVoicePrompt(
+              localizedWorksheet,
+              worksheetLanguage,
+              true
+            )
+          );
         }
       },
     }, {
       startPromptCycleOnConnect: false,
+      language: worksheetLanguage,
     });
 
     liveServiceRef.current = live;
     live.connect().catch(() => {});
-  }, [completedWorksheet, disconnectLive, getApiKey, stopReadAloud]);
+  }, [
+    disconnectLive,
+    feedbackLoadingByLanguage,
+    getApiKey,
+    localizedCompletedWorksheets,
+    stopReadAloud,
+    worksheetLanguage,
+  ]);
 
   const captureNow = useCallback(() => {
     if (workflowStepRef.current !== 'guided_capture' || isAnalyzingRef.current) return;
-    setStatus('Capturing current frame...');
+    setStatus(getPrototypeCopy(worksheetLanguage).statuses.capturingCurrentFrame);
     setCaptureRequestNonce(prev => prev + 1);
-  }, []);
+  }, [worksheetLanguage]);
 
   const isGuidedCapture = workflowStep === 'guided_capture';
   const isProcessing = workflowStep === 'processing';
   const isLiveConnected = liveConnectionState === 'connected';
   const isLiveFailed = liveConnectionState === 'error';
   const isReadAloudActive = readAloudState === 'connecting' || readAloudState === 'speaking';
+  const languageCopy = getPrototypeCopy(worksheetLanguage);
+  const selectedCompletedWorksheet = completedWorksheet
+    ? localizedCompletedWorksheets[worksheetLanguage] ?? null
+    : null;
+  const isFinishedFeedbackLoading = workflowStep === 'finished'
+    && Boolean(completedWorksheet)
+    && !selectedCompletedWorksheet
+    && feedbackLoadingByLanguage[worksheetLanguage] === true;
   const listenButtonLabel = readAloudState === 'connecting'
-    ? 'Loading'
+    ? languageCopy.buttons.loading
     : readAloudState === 'speaking'
-      ? 'Stop'
-      : 'Listen';
+      ? languageCopy.buttons.stop
+      : languageCopy.buttons.listen;
   const listenButtonIcon = readAloudState === 'connecting'
     ? <RotateCcw className="h-9 w-9 animate-spin" />
     : <Volume2 className="h-9 w-9" />;
   const isListenButtonDisabled = readAloudState === 'connecting';
-  const languageOptions: Array<{ value: WorksheetLanguage; label: string }> = [
-    { value: 'en', label: 'English' },
-    { value: 'es', label: 'Español' },
-  ];
-  const currentLanguageLabel = languageOptions.find(option => option.value === worksheetLanguage)?.label ?? 'English';
+  const languageOptions = languageCopy.languageOptions;
+  const currentLanguageLabel = languageOptions.find(option => option.value === worksheetLanguage)?.label ?? languageOptions[0].label;
   const currentStepNumber = workflowStep === 'start' ? '1' : workflowStep === 'view_pdf' ? '2' : '3';
-  const feedbackSummary = buildFeedbackSummary(completedWorksheet);
+  const feedbackSummary = isFinishedFeedbackLoading
+    ? languageCopy.feedback.loadingMessage
+    : buildFeedbackSummary(
+      selectedCompletedWorksheet ?? completedWorksheet,
+      worksheetLanguage,
+      Boolean(selectedCompletedWorksheet)
+    );
+  const finishedListenButtonLabel = isFinishedFeedbackLoading
+    ? languageCopy.buttons.loading
+    : languageCopy.buttons.listen;
+  const finishedListenButtonIcon = isFinishedFeedbackLoading
+    ? <RotateCcw className="h-9 w-9 animate-spin" />
+    : <Volume2 className="h-9 w-9" />;
+  const isFinishedListenDisabled = !selectedCompletedWorksheet || isFinishedFeedbackLoading;
   const captureCaption = isLiveFailed
-    ? 'Live guidance unavailable. Use Capture Now.'
+    ? languageCopy.captureCaption.liveUnavailable
     : isProcessing
-      ? 'Reading your answers...'
+      ? languageCopy.statuses.readingAnswers
       : status;
+  const localizedWorksheetSource = {
+    ...bundledWorksheetSource,
+    title: languageCopy.worksheetPreview.title,
+    previewAlt: languageCopy.worksheetPreview.previewAlt,
+  };
 
   const handleStepBack = useCallback(() => {
     setIsLanguageMenuOpen(false);
@@ -526,31 +602,100 @@ export default function App() {
     };
   }, [disconnectLive, stopReadAloud]);
 
+  useEffect(() => {
+    if (workflowStep !== 'finished' || !completedWorksheet) {
+      return;
+    }
+
+    if (
+      localizedCompletedWorksheets[worksheetLanguage]
+      || feedbackLoadingByLanguage[worksheetLanguage]
+      || feedbackRequestedByLanguage[worksheetLanguage]
+    ) {
+      return;
+    }
+
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      return;
+    }
+
+    const sessionId = feedbackLocalizationSessionRef.current;
+    const sourceWorksheet = completedWorksheet;
+    setFeedbackRequestedByLanguage(prev => ({
+      ...prev,
+      [worksheetLanguage]: true,
+    }));
+    setFeedbackLoadingByLanguage(prev => ({
+      ...prev,
+      [worksheetLanguage]: true,
+    }));
+
+    const service = new GeminiWorksheetService(apiKey, worksheetLanguage);
+    service.localizeCompletedWorksheetFeedback(sourceWorksheet, {
+      subject: bundledWorksheetSource.subject,
+      answerKey: bundledWorksheetSource.questionContexts,
+      language: worksheetLanguage,
+    }).then((localizedWorksheet) => {
+      if (feedbackLocalizationSessionRef.current !== sessionId) {
+        return;
+      }
+
+      setLocalizedCompletedWorksheets(prev => ({
+        ...prev,
+        [worksheetLanguage]: localizedWorksheet,
+      }));
+    }).catch((error) => {
+      console.error('Finished feedback localization failed:', error);
+    }).finally(() => {
+      if (feedbackLocalizationSessionRef.current !== sessionId) {
+        return;
+      }
+
+      setFeedbackLoadingByLanguage(prev => ({
+        ...prev,
+        [worksheetLanguage]: false,
+      }));
+    });
+  }, [
+    completedWorksheet,
+    feedbackLoadingByLanguage,
+    feedbackRequestedByLanguage,
+    getApiKey,
+    localizedCompletedWorksheets,
+    worksheetLanguage,
+    workflowStep,
+  ]);
+
   return (
     <div className="min-h-screen font-sans">
       {showConfetti && <ConfettiEffect />}
 
-      <div className="mx-auto flex min-h-screen w-full max-w-[1200px] flex-col px-4 py-[10px]">
-        <TopShell
-          stepNumber={currentStepNumber}
-          languageLabel={currentLanguageLabel}
-          isLanguageMenuOpen={isLanguageMenuOpen}
-          languageMenuRef={languageMenuRef}
-          onToggleLanguageMenu={() => setIsLanguageMenuOpen(prev => !prev)}
-          onSelectLanguage={handleLanguageChange}
-          languageOptions={languageOptions}
-          selectedLanguage={worksheetLanguage}
-          onHome={resetWorkflow}
-          onBack={handleStepBack}
-          onForward={handleStepForward}
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-        />
+      <div className="flex min-h-screen flex-col">
+        <div className="w-full px-4 py-[10px] sm:px-6 lg:px-8">
+          <TopShell
+            stepNumber={currentStepNumber}
+            languageButtonLabel={languageCopy.languageButtonLabel(currentLanguageLabel)}
+            isLanguageMenuOpen={isLanguageMenuOpen}
+            languageMenuRef={languageMenuRef}
+            onToggleLanguageMenu={() => setIsLanguageMenuOpen(prev => !prev)}
+            onSelectLanguage={handleLanguageChange}
+            languageOptions={languageOptions}
+            selectedLanguage={worksheetLanguage}
+            onHome={resetWorkflow}
+            onBack={handleStepBack}
+            onForward={handleStepForward}
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            topShellCopy={languageCopy.topShell}
+          />
+        </div>
 
-        <div className="flex flex-1 items-center justify-center">
-          <AnimatePresence mode="wait">
-            {workflowStep === 'start' && (
-              <motion.section
+        <div className="mx-auto flex w-full max-w-[1200px] flex-1 flex-col px-4">
+          <div className="flex flex-1 items-center justify-center">
+            <AnimatePresence mode="wait">
+              {workflowStep === 'start' && (
+                <motion.section
                 key="start"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -559,20 +704,20 @@ export default function App() {
               >
                 <div className="flex w-full flex-col items-center gap-[40px] px-4">
                   <OvalButton
-                    label="Start Quiz Worksheet"
+                    label={languageCopy.buttons.startQuizWorksheet}
                     icon={<ArrowRight className="h-9 w-9" />}
                     variant="primary"
                     onClick={handleStart}
                     className="min-w-[365px] max-w-full"
                   />
                   <OvalButton
-                    label="Upload a Different Worksheet"
+                    label={languageCopy.buttons.uploadDifferentWorksheet}
                     icon={<ArrowUpFromLine className="h-9 w-9" />}
                     variant="secondary"
                     className="min-w-[467px] max-w-full"
                   />
                   <OvalButton
-                    label="Upload Finished Worksheet"
+                    label={languageCopy.buttons.uploadFinishedWorksheet}
                     icon={<Check className="h-9 w-9" />}
                     variant="secondary"
                     className="min-w-[433px] max-w-full"
@@ -581,7 +726,7 @@ export default function App() {
                     className="mt-2 text-center text-[24px] leading-[34px] text-gray-btn"
                     style={{ fontFamily: 'var(--font-student-upper)' }}
                   >
-                    These options are visible for prototyping purposes only.
+                    {languageCopy.prototypeNotice}
                   </p>
                 </div>
               </motion.section>
@@ -595,9 +740,11 @@ export default function App() {
                 exit={{ opacity: 0 }}
                 className="flex min-h-[690px] w-full items-center justify-center"
               >
-                <div className="flex w-full flex-col items-center">
+                <div className="flex w-full flex-col items-center gap-4">
                   <WorksheetPreview
-                    source={bundledWorksheetSource}
+                    source={localizedWorksheetSource}
+                    loadingLabel={languageCopy.worksheetPreview.loading}
+                    fallbackLabel={languageCopy.worksheetPreview.fallback}
                     overlay={(
                       <OvalButton
                         label={listenButtonLabel}
@@ -609,6 +756,11 @@ export default function App() {
                       />
                     )}
                   />
+                  {readAloudError ? (
+                    <p className="max-w-[30rem] text-center text-sm font-semibold text-text-secondary">
+                      {readAloudError}
+                    </p>
+                  ) : null}
                 </div>
               </motion.section>
             )}
@@ -623,7 +775,7 @@ export default function App() {
               >
                 <div className="k1-stage-dashed flex h-[530px] w-full max-w-[480px] items-center justify-center">
                   <OvalButton
-                    label="Take Picture"
+                    label={languageCopy.buttons.takePicture}
                     icon={<Camera className="h-9 w-9" />}
                     variant="primary"
                     onClick={handleTakePicture}
@@ -649,6 +801,9 @@ export default function App() {
                         isCapturing={isGuidedCapture}
                         isFinished={false}
                         status={status}
+                        cameraAccessErrorLabel={languageCopy.cameraPreview.cameraAccessNeeded}
+                        capturedTitle={languageCopy.cameraPreview.workCaptured}
+                        capturedSubtitle={languageCopy.cameraPreview.reviewFeedback}
                         captureRequestNonce={captureRequestNonce}
                         triggerAutoCapture={triggerAutoCapture}
                         onFrame={handleFrame}
@@ -658,7 +813,7 @@ export default function App() {
                       {isProcessing ? (
                         <div className="absolute inset-0 flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
                           <OvalButton
-                            label="Capturing"
+                            label={languageCopy.buttons.capturing}
                             icon={<RotateCcw className="h-9 w-9 animate-spin" />}
                             variant="disabled"
                             disabled
@@ -671,7 +826,7 @@ export default function App() {
 
                   {!isProcessing ? (
                     <OvalButton
-                      label="Capture Now"
+                      label={languageCopy.buttons.captureNow}
                       icon={<Camera className="h-9 w-9" />}
                       variant="secondary"
                       onClick={captureNow}
@@ -690,7 +845,7 @@ export default function App() {
 
                   {!isLiveConnected && !isLiveFailed && !isProcessing ? (
                     <p className="text-center text-sm font-semibold text-text-secondary">
-                      Connecting to live guidance...
+                      {languageCopy.captureCaption.connecting}
                     </p>
                   ) : null}
                 </div>
@@ -708,7 +863,10 @@ export default function App() {
                 <div className="grid w-full max-w-[1120px] items-start gap-[68px] md:grid-cols-[410px_minmax(0,1fr)]">
                   <div className="flex justify-center md:justify-start">
                     {lastCapturedFrame ? (
-                      <CapturedWorksheetPreview base64Image={lastCapturedFrame} />
+                      <CapturedWorksheetPreview
+                        base64Image={lastCapturedFrame}
+                        altText={languageCopy.capturedWorksheetAlt}
+                      />
                     ) : (
                       <div className="h-[483px] w-[410px] bg-[#bdbdbd]" />
                     )}
@@ -716,10 +874,11 @@ export default function App() {
 
                   <div className="flex flex-col items-start gap-[28px] pt-[4px]">
                     <OvalButton
-                      label="Listen"
-                      icon={<Volume2 className="h-9 w-9" />}
+                      label={finishedListenButtonLabel}
+                      icon={finishedListenButtonIcon}
                       variant="primary"
-                      onClick={completedWorksheet ? handleReplayFeedback : undefined}
+                      onClick={!isFinishedListenDisabled ? handleReplayFeedback : undefined}
+                      disabled={isFinishedListenDisabled}
                       className="min-w-[161px]"
                     />
 
@@ -731,7 +890,7 @@ export default function App() {
                     </p>
 
                     <OvalButton
-                      label="Redo"
+                      label={languageCopy.buttons.redo}
                       icon={<RotateCcw className="h-9 w-9" />}
                       variant="secondary"
                       onClick={resetWorkflow}
@@ -742,6 +901,7 @@ export default function App() {
               </motion.section>
             )}
           </AnimatePresence>
+          </div>
         </div>
       </div>
     </div>
@@ -750,7 +910,7 @@ export default function App() {
 
 function TopShell({
   stepNumber,
-  languageLabel,
+  languageButtonLabel,
   isLanguageMenuOpen,
   languageMenuRef,
   onToggleLanguageMenu,
@@ -762,27 +922,34 @@ function TopShell({
   onForward,
   canGoBack,
   canGoForward,
+  topShellCopy,
 }: {
   stepNumber: string;
-  languageLabel: string;
+  languageButtonLabel: string;
   isLanguageMenuOpen: boolean;
   languageMenuRef: RefObject<HTMLDivElement | null>;
   onToggleLanguageMenu: () => void;
-  onSelectLanguage: (language: WorksheetLanguage) => void;
-  languageOptions: Array<{ value: WorksheetLanguage; label: string }>;
-  selectedLanguage: WorksheetLanguage;
+  onSelectLanguage: (language: PrototypeLanguage) => void;
+  languageOptions: Array<{ value: PrototypeLanguage; label: string }>;
+  selectedLanguage: PrototypeLanguage;
   onHome: () => void;
   onBack: () => void;
   onForward: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
+  topShellCopy: {
+    goHome: string;
+    expand: string;
+    previousStep: string;
+    nextStep: string;
+  };
 }) {
   return (
     <header className="w-full">
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <div className="flex items-center gap-[17px]">
           <TopIconButton
-            label="Go home"
+            label={topShellCopy.goHome}
             icon={<img src={homeIconUrl} alt="" className="h-9 w-9" />}
             onClick={onHome}
           />
@@ -791,12 +958,12 @@ function TopShell({
 
         <div className="flex items-center gap-[17px]">
           <TopIconButton
-            label="Expand"
+            label={topShellCopy.expand}
             icon={<img src={expandIconUrl} alt="" className="h-9 w-9" />}
           />
           <div ref={languageMenuRef} className="relative">
             <TopIconButton
-              label={`Language: ${languageLabel}`}
+              label={languageButtonLabel}
               icon={<img src={languageSettingsIconUrl} alt="" className="h-9 w-9" />}
               onClick={onToggleLanguageMenu}
               active={isLanguageMenuOpen}
@@ -829,7 +996,7 @@ function TopShell({
 
         <div className="flex items-center gap-[17px]">
           <ArrowNavButton
-            label="Previous step"
+            label={topShellCopy.previousStep}
             direction="left"
             onClick={onBack}
             disabled={!canGoBack}
@@ -838,7 +1005,7 @@ function TopShell({
             {stepNumber}
           </p>
           <ArrowNavButton
-            label="Next step"
+            label={topShellCopy.nextStep}
             direction="right"
             onClick={onForward}
             disabled={!canGoForward}
@@ -952,56 +1119,72 @@ function ArrowNavButton({
   );
 }
 
-function CapturedWorksheetPreview({ base64Image }: { base64Image: string }) {
+function CapturedWorksheetPreview({
+  base64Image,
+  altText,
+}: {
+  base64Image: string;
+  altText: string;
+}) {
   return (
     <div className="h-[483px] w-[410px] overflow-hidden bg-[#bdbdbd]">
       <img
         src={`data:image/jpeg;base64,${base64Image}`}
-        alt="Your completed worksheet"
+        alt={altText}
         className="h-full w-full bg-white object-contain"
       />
     </div>
   );
 }
 
-function buildFeedbackSummary(worksheet: CompletedWorksheetData | null): string {
+function buildFeedbackSummary(
+  worksheet: CompletedWorksheetData | null,
+  language: PrototypeLanguage,
+  useModelFeedback: boolean
+): string {
+  const copy = getPrototypeCopy(language);
   if (!worksheet) {
-    return 'Nice work finishing your worksheet.';
+    return copy.feedback.defaultSummary;
   }
 
   const answeredCount = worksheet.responses.filter(response => response.answered).length;
   const totalCount = worksheet.responses.length;
   const analysis = worksheet.analysis;
+  const caution = !worksheet.isGradingSafe || worksheet.missingResponseAreas.length > 0
+    ? (useModelFeedback ? analysis?.caution : copy.feedback.caution)
+    : '';
 
-  return [
-    analysis?.textFeedback || worksheet.feedback || 'Nice work!',
-    !analysis?.textFeedback ? `You completed ${answeredCount} of ${totalCount} questions.` : '',
-    analysis?.caution,
-    !analysis?.textFeedback ? worksheet.visualWorkSummary : '',
-  ].filter(Boolean).join(' ');
+  return buildFeedbackSummaryText(language, [
+    useModelFeedback ? analysis?.textFeedback || worksheet.feedback : '',
+    !useModelFeedback || !analysis?.textFeedback
+      ? copy.feedback.fallbackSummary(answeredCount, totalCount)
+      : '',
+    caution,
+    useModelFeedback ? worksheet.visualWorkSummary : '',
+  ]);
 }
 
-function buildFeedbackVoicePrompt(worksheet: CompletedWorksheetData): string {
+function buildFeedbackVoicePrompt(
+  worksheet: CompletedWorksheetData,
+  language: PrototypeLanguage,
+  useModelFeedback: boolean
+): string {
+  const copy = getPrototypeCopy(language);
   const answeredCount = worksheet.responses.filter(r => r.answered).length;
   const totalCount = worksheet.responses.length;
   const showedWork = worksheet.responses.some(r => r.studentWorkDescription);
   const analysis = worksheet.analysis;
-  const exactVoiceMessage = analysis?.voiceFeedback
-    || worksheet.feedback
-    || `You answered ${answeredCount} out of ${totalCount} questions and showed your thinking.`;
+  const caution = !worksheet.isGradingSafe || worksheet.missingResponseAreas.length > 0
+    ? (useModelFeedback ? analysis?.caution : copy.feedback.caution)
+    : undefined;
+  const exactVoiceMessage = useModelFeedback
+    ? analysis?.voiceFeedback || worksheet.feedback || copy.feedback.fallbackVoice(answeredCount, totalCount)
+    : copy.feedback.fallbackVoice(answeredCount, totalCount);
 
-  return [
-    'Read the following message exactly to the student in a short, warm, child-friendly voice.',
-    `Exact message: "${exactVoiceMessage}"`,
-    analysis?.caution ? `If it fits naturally, add this short caution afterward: "${analysis.caution}"` : '',
-    worksheet.visualWorkSummary && !analysis?.voiceFeedback
-      ? `Visible work summary: ${worksheet.visualWorkSummary}`
-      : '',
-    showedWork && !analysis?.voiceFeedback
-      ? 'The student showed their thinking and work on the paper — make sure that praise stays in the message.'
-      : '',
-    '',
-    'Do not add greetings, extra commentary, or new analysis.',
-    'Keep it short (about 10-15 seconds of speaking), warm, and encouraging for a young student.',
-  ].filter(Boolean).join('\n');
+  return buildFeedbackVoicePromptText(language, {
+    exactMessage: exactVoiceMessage,
+    caution,
+    visualWorkSummary: useModelFeedback ? worksheet.visualWorkSummary : undefined,
+    showedWork,
+  });
 }

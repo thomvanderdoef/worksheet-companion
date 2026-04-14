@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import { getPrototypeCopy, type PrototypeLanguage } from "../content/localization";
 import type { WorksheetQuestionContext } from "../content/worksheetSource";
 
 export type ScanPhase = "empty" | "completed";
@@ -145,6 +146,7 @@ interface ExtractionContext {
   emptyWorksheet?: EmptyWorksheetData;
   answerKey?: WorksheetQuestionContext[];
   metrics?: CaptureMetricsContext;
+  language?: PrototypeLanguage;
 }
 
 interface ResponseInsightItem {
@@ -164,6 +166,13 @@ interface FeedbackAnalysisResponse {
   caution?: string;
   textFeedback?: string;
   voiceFeedback?: string;
+}
+
+interface LocalizedCompletedWorksheetCopyResponse {
+  feedback?: string;
+  completionNotes?: string;
+  visualWorkSummary?: string;
+  capturedPortionSummary?: string;
 }
 
 interface EmptyQuestionResponse {
@@ -492,16 +501,122 @@ const FEEDBACK_ANALYSIS_SCHEMA = {
   required: ["responseInsights", "strengths", "nextSteps", "textFeedback", "voiceFeedback"],
 } as const;
 
+const LOCALIZED_COMPLETED_WORKSHEET_COPY_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    feedback: {
+      type: Type.STRING,
+      description: "Localized encouraging feedback for the student.",
+    },
+    completionNotes: {
+      type: Type.STRING,
+      description: "Localized note about overall worksheet completion.",
+    },
+    visualWorkSummary: {
+      type: Type.STRING,
+      description: "Localized summary of the student's visible work.",
+    },
+    capturedPortionSummary: {
+      type: Type.STRING,
+      description: "Localized summary of which part of the worksheet is visible.",
+    },
+  },
+} as const;
+
 export class GeminiWorksheetService {
   private ai: GoogleGenAI;
+  private defaultLanguage: PrototypeLanguage;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, language: PrototypeLanguage = "en") {
     this.ai = new GoogleGenAI({ apiKey });
+    this.defaultLanguage = language;
+  }
+
+  private resolveLanguage(context?: { language?: PrototypeLanguage }): PrototypeLanguage {
+    return context?.language ?? this.defaultLanguage;
+  }
+
+  private emptyWorksheetClarityMessage(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Necesito una imagen mas clara de toda la hoja."
+      : "I need a clearer picture of the whole worksheet.";
+  }
+
+  private fullWorksheetPageMessage(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Necesito ver toda la pagina de la hoja."
+      : "I need to see the full worksheet page.";
+  }
+
+  private steadyWorksheetMessage(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Manten la hoja quieta para que pueda leerla."
+      : "Hold the worksheet steady so I can read it.";
+  }
+
+  private answersClarityMessage(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Necesito una imagen mas clara de tus respuestas."
+      : "I need a clearer picture of your answers.";
+  }
+
+  private workedOnQuestionsText(
+    language: PrototypeLanguage,
+    answeredCount: number,
+    totalCount: number
+  ): string {
+    return language === "es"
+      ? `Trabajaste en ${answeredCount} de ${totalCount} preguntas.`
+      : `You worked on ${answeredCount} of ${totalCount} questions.`;
+  }
+
+  private completedQuestionsText(
+    language: PrototypeLanguage,
+    answeredCount: number,
+    totalCount: number
+  ): string {
+    return language === "es"
+      ? `Completaste ${answeredCount} de ${totalCount} preguntas y mostraste lo que estabas pensando.`
+      : `You completed ${answeredCount} of ${totalCount} questions and showed what you were thinking.`;
+  }
+
+  private workedOnQuestionsVoiceText(
+    language: PrototypeLanguage,
+    answeredCount: number,
+    totalCount: number
+  ): string {
+    return language === "es"
+      ? `Trabajaste en ${answeredCount} de ${totalCount} preguntas y mostraste tu pensamiento.`
+      : `You worked on ${answeredCount} of ${totalCount} questions and showed your thinking.`;
+  }
+
+  private showedThinkingText(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Mostraste tu pensamiento en la hoja."
+      : "You showed your thinking on the page.";
+  }
+
+  private keepWorkClearText(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Haz tu trabajo mas oscuro y claro para que sea mas facil leerlo la proxima vez."
+      : "Keep your work dark and clear so it is easier to read next time.";
+  }
+
+  private startedVoiceText(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Empezaste y me mostraste parte de tu trabajo."
+      : "You got started and showed me some of your work.";
+  }
+
+  private tryThisProblemText(language: PrototypeLanguage): string {
+    return language === "es"
+      ? "Intenta resolver este problema para que pueda ver tu pensamiento."
+      : "Try to give this problem a try so I can see your thinking.";
   }
 
   async extractEmptyWorksheet(
     image: ImagePayload,
-    context?: { metrics?: CaptureMetricsContext }
+    context?: { metrics?: CaptureMetricsContext; language?: PrototypeLanguage }
   ): Promise<EmptyWorksheetExtractionResult> {
     return this.extractEmptyWorksheetData(image, context);
   }
@@ -513,9 +628,28 @@ export class GeminiWorksheetService {
     return this.extractCompletedWorksheetData(image, context);
   }
 
+  async localizeCompletedWorksheetFeedback(
+    worksheet: CompletedWorksheetData,
+    context: Omit<ExtractionContext, "emptyWorksheet" | "metrics"> & { language: PrototypeLanguage }
+  ): Promise<CompletedWorksheetData> {
+    const localizedCopy = await this.localizeCompletedWorksheetCopy(worksheet, context.language);
+    const localizedWorksheet: CompletedWorksheetData = {
+      ...worksheet,
+      feedback: localizedCopy.feedback,
+      completionNotes: localizedCopy.completionNotes,
+      visualWorkSummary: localizedCopy.visualWorkSummary,
+      capturedPortionSummary: localizedCopy.capturedPortionSummary ?? worksheet.capturedPortionSummary,
+    };
+
+    return {
+      ...localizedWorksheet,
+      analysis: await this.analyzeCompletedWorksheet(localizedWorksheet, context, context.language),
+    };
+  }
+
   private async extractEmptyWorksheetData(
     image: ImagePayload,
-    context?: { metrics?: CaptureMetricsContext }
+    context?: { metrics?: CaptureMetricsContext; language?: PrototypeLanguage }
   ): Promise<EmptyWorksheetExtractionResult> {
     const prompt = this.buildPrompt("empty", context);
     const response = await this.ai.models.generateContent({
@@ -543,13 +677,14 @@ export class GeminiWorksheetService {
       console.error("Failed to parse Gemini extraction response:", error, response.text);
     }
 
-    return this.normalizeEmptyResponse(parsed);
+    return this.normalizeEmptyResponse(parsed, this.resolveLanguage(context));
   }
 
   private async extractCompletedWorksheetData(
     image: ImagePayload,
     context?: ExtractionContext
   ): Promise<CompletedWorksheetExtractionResult> {
+    const language = this.resolveLanguage(context);
     const prompt = this.buildPrompt("completed", context);
     const response = await this.ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -576,27 +711,35 @@ export class GeminiWorksheetService {
       console.error("Failed to parse Gemini extraction response:", error, response.text);
     }
 
-    const normalized = this.normalizeCompletedResponse(parsed, context);
+    const normalized = this.normalizeCompletedResponse(parsed, context, language);
     if (normalized.outcome !== "captured") {
       return normalized;
     }
 
     return {
       outcome: "captured",
-      data: await this.enrichCompletedWorksheet(normalized.data, context),
+      data: await this.enrichCompletedWorksheet(normalized.data, context, language),
     };
   }
 
-  private buildPrompt(phase: "empty", context?: { metrics?: CaptureMetricsContext }): string;
+  private buildPrompt(
+    phase: "empty",
+    context?: { metrics?: CaptureMetricsContext; language?: PrototypeLanguage }
+  ): string;
   private buildPrompt(phase: "completed", context?: ExtractionContext): string;
   private buildPrompt(
     phase: ScanPhase,
-    context?: { metrics?: CaptureMetricsContext } | ExtractionContext
+    context?: { metrics?: CaptureMetricsContext; language?: PrototypeLanguage } | ExtractionContext
   ): string {
+    const language = this.resolveLanguage(context);
+    const isSpanish = language === "es";
     const metrics = context?.metrics;
     const metricsLine = metrics
       ? `Capture mode: ${metrics.captureMode}.`
       : "";
+    const studentFacingLanguageLine = isSpanish
+      ? "Return all student-facing strings in Spanish. This includes `message`, `studentTaskSummary`, `feedback`, `completionNotes`, `visualWorkSummary`, and any other text intended for the student."
+      : "Return all student-facing strings in English.";
 
     const commonRules = [
       "You are reading a single captured photo of a paper worksheet.",
@@ -606,6 +749,7 @@ export class GeminiWorksheetService {
       "Allow small finger or hand occlusions near the page edges only when no instructional text, prompt, or answer area is hidden.",
       "If the page is readable and complete, return outcome='captured'.",
       metricsLine,
+      studentFacingLanguageLine,
       "Return JSON only.",
     ].filter(Boolean);
 
@@ -620,7 +764,9 @@ export class GeminiWorksheetService {
         "Use `expectedResponseType` for each question: multiple_choice, short_text, number, drawing, multi_part, or unknown.",
         "Set `completeness.isFullPageVisible=true` only if the whole worksheet is visible and readable.",
         "If any meaningful part of the page is missing, set outcome='need_better_view' instead of captured.",
-        "If the photo is not readable enough, provide a short kid-friendly `message` such as 'Move closer' or 'Reduce glare'.",
+        isSpanish
+          ? "If the photo is not readable enough, provide a short kid-friendly `message` in Spanish such as 'Acercate un poco' or 'Quita el reflejo'."
+          : "If the photo is not readable enough, provide a short kid-friendly `message` such as 'Move closer' or 'Reduce glare'.",
       ].join(" ");
     }
 
@@ -654,17 +800,25 @@ export class GeminiWorksheetService {
       "Add short `completionNotes` and a short overall `visualWorkSummary`.",
       "Write `feedback` that celebrates the student's effort and praises them for showing their thinking and work. Comment on how many questions they attempted, whether they showed their steps, and the effort they put in. Do NOT check whether answers are mathematically correct or incorrect — you are not reliable at grading math. Focus only on effort, completion, and showing work.",
       "Add an optional `score`.",
+      isSpanish
+        ? "Write student-facing outputs such as `feedback`, `completionNotes`, `visualWorkSummary`, and `message` in Spanish."
+        : "",
       subjectLine,
       worksheetReference,
       answerKeyReference,
       "If the worksheet image hides or cuts off any important response area, return outcome='need_better_view'.",
-      "If the photo is not readable enough, provide a short kid-friendly `message` such as 'Hold it steadier' or 'I can only see part of the page'.",
+      isSpanish
+        ? "If the photo is not readable enough, provide a short kid-friendly `message` in Spanish such as 'Mantenla quieta' or 'Solo puedo ver parte de la pagina'."
+        : "If the photo is not readable enough, provide a short kid-friendly `message` such as 'Hold it steadier' or 'I can only see part of the page'.",
     ]
       .filter(Boolean)
       .join(" ");
   }
 
-  private normalizeEmptyResponse(response: EmptyExtractionResponse): EmptyWorksheetExtractionResult {
+  private normalizeEmptyResponse(
+    response: EmptyExtractionResponse,
+    language: PrototypeLanguage
+  ): EmptyWorksheetExtractionResult {
     if (response.outcome === "captured") {
       const studentTaskSummary = response.studentTaskSummary?.trim();
       const sections = this.normalizeSections(response.sections);
@@ -680,14 +834,14 @@ export class GeminiWorksheetService {
       );
 
       if (!studentTaskSummary || !hasStructuredContent) {
-        return this.needBetterView("empty", "other", "I need a clearer picture of the whole worksheet.");
+        return this.needBetterView("empty", "other", this.emptyWorksheetClarityMessage(language));
       }
 
       if (!completeness.isFullPageVisible || completeness.missingAreas.length > 0) {
         return this.needBetterView(
           "empty",
           "partial_page",
-          "I need to see the full worksheet page."
+          this.fullWorksheetPageMessage(language)
         );
       }
 
@@ -712,14 +866,16 @@ export class GeminiWorksheetService {
     return this.needBetterView(
       "empty",
       this.normalizeReason(response.reason),
-      response.message?.trim() || "Hold the worksheet steady so I can read it."
+      response.message?.trim() || this.steadyWorksheetMessage(language)
     );
   }
 
   private normalizeCompletedResponse(
     response: CompletedExtractionResponse,
-    context?: ExtractionContext
+    context?: ExtractionContext,
+    language: PrototypeLanguage = this.defaultLanguage
   ): CompletedWorksheetExtractionResult {
+    const copy = getPrototypeCopy(language);
     if (response.outcome === "captured") {
       const responses = this.ensureQuestionCoverage(
         context?.emptyWorksheet,
@@ -732,7 +888,7 @@ export class GeminiWorksheetService {
       const hasPartialCapture = missingResponseAreas.length > 0 || Boolean(capturedPortionSummary);
 
       if (responses.length === 0 && unmatchedMarks.length === 0) {
-        return this.needBetterView("completed", "other", "I need a clearer picture of your answers.");
+        return this.needBetterView("completed", "other", this.answersClarityMessage(language));
       }
 
       return {
@@ -746,7 +902,7 @@ export class GeminiWorksheetService {
           capturedPortionSummary,
           completionNotes: response.completionNotes?.trim(),
           visualWorkSummary: response.visualWorkSummary?.trim(),
-          feedback: response.feedback?.trim() || "Nice work. I captured your worksheet.",
+          feedback: response.feedback?.trim() || copy.feedback.genericEffort,
           score: response.score?.trim(),
         },
       };
@@ -755,15 +911,16 @@ export class GeminiWorksheetService {
     return this.needBetterView(
       "completed",
       this.normalizeReason(response.reason),
-      response.message?.trim() || "Hold the worksheet steady so I can read it."
+      response.message?.trim() || this.steadyWorksheetMessage(language)
     );
   }
 
   private async enrichCompletedWorksheet(
     worksheet: CompletedWorksheetData,
-    context?: ExtractionContext
+    context?: ExtractionContext,
+    language: PrototypeLanguage = this.defaultLanguage
   ): Promise<CompletedWorksheetData> {
-    const analysis = await this.analyzeCompletedWorksheet(worksheet, context);
+    const analysis = await this.analyzeCompletedWorksheet(worksheet, context, language);
 
     return {
       ...worksheet,
@@ -773,17 +930,24 @@ export class GeminiWorksheetService {
 
   private async analyzeCompletedWorksheet(
     worksheet: CompletedWorksheetData,
-    context?: ExtractionContext
+    context?: ExtractionContext,
+    language: PrototypeLanguage = this.defaultLanguage
   ): Promise<WorksheetFeedbackAnalysis> {
-    const deterministicInsights = this.buildDeterministicInsights(worksheet, context?.answerKey);
+    const deterministicInsights = this.buildDeterministicInsights(
+      worksheet,
+      context?.answerKey,
+      language
+    );
     if (!context?.answerKey?.length) {
-      return this.buildFallbackAnalysis(worksheet, deterministicInsights);
+      return this.buildFallbackAnalysis(worksheet, deterministicInsights, language);
     }
 
     try {
       const response = await this.ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: [{ text: this.buildAnalysisPrompt(worksheet, context.answerKey, deterministicInsights) }],
+        contents: [
+          { text: this.buildAnalysisPrompt(worksheet, context.answerKey, deterministicInsights, language) },
+        ],
         config: {
           temperature: 0.2,
           responseMimeType: "application/json",
@@ -798,18 +962,67 @@ export class GeminiWorksheetService {
         console.error("Failed to parse Gemini feedback analysis:", error, response.text);
       }
 
-      return this.normalizeFeedbackAnalysis(parsed, worksheet, deterministicInsights);
+      return this.normalizeFeedbackAnalysis(parsed, worksheet, deterministicInsights, language);
     } catch (error) {
       console.error("Completed worksheet analysis failed:", error);
-      return this.buildFallbackAnalysis(worksheet, deterministicInsights);
+      return this.buildFallbackAnalysis(worksheet, deterministicInsights, language);
     }
+  }
+
+  private async localizeCompletedWorksheetCopy(
+    worksheet: CompletedWorksheetData,
+    language: PrototypeLanguage
+  ): Promise<LocalizedCompletedWorksheetCopyResponse> {
+    const targetLanguage = language === "es" ? "Spanish" : "English";
+    const response = await this.ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{
+        text: [
+          `You are localizing student-facing worksheet feedback into ${targetLanguage}.`,
+          `Return all output text in ${targetLanguage}.`,
+          "Preserve the meaning, tone, and level of detail from the source.",
+          "Do not add new grading claims or new observations.",
+          "If a field is missing or empty, return an empty string for that field.",
+          "Return JSON only.",
+          "",
+          "Source feedback:",
+          worksheet.feedback ? `feedback: ${worksheet.feedback}` : "feedback:",
+          worksheet.completionNotes ? `completionNotes: ${worksheet.completionNotes}` : "completionNotes:",
+          worksheet.visualWorkSummary ? `visualWorkSummary: ${worksheet.visualWorkSummary}` : "visualWorkSummary:",
+          worksheet.capturedPortionSummary
+            ? `capturedPortionSummary: ${worksheet.capturedPortionSummary}`
+            : "capturedPortionSummary:",
+        ].join("\n"),
+      }],
+      config: {
+        temperature: 0.2,
+        responseMimeType: "application/json",
+        responseSchema: LOCALIZED_COMPLETED_WORKSHEET_COPY_SCHEMA,
+      },
+    });
+
+    let parsed: LocalizedCompletedWorksheetCopyResponse = {};
+    try {
+      parsed = JSON.parse(response.text ?? "{}") as LocalizedCompletedWorksheetCopyResponse;
+    } catch (error) {
+      console.error("Failed to parse localized worksheet copy:", error, response.text);
+    }
+
+    return {
+      feedback: parsed.feedback?.trim() || undefined,
+      completionNotes: parsed.completionNotes?.trim() || undefined,
+      visualWorkSummary: parsed.visualWorkSummary?.trim() || undefined,
+      capturedPortionSummary: parsed.capturedPortionSummary?.trim() || undefined,
+    };
   }
 
   private buildAnalysisPrompt(
     worksheet: CompletedWorksheetData,
     answerKey: WorksheetQuestionContext[],
-    deterministicInsights: ResponseInsight[]
+    deterministicInsights: ResponseInsight[],
+    language: PrototypeLanguage = this.defaultLanguage
   ): string {
+    const isSpanish = language === "es";
     const lines = [
       "You are reviewing early elementary student math work after the image has already been transcribed into structured data.",
       "Use only the answer key, extracted responses, and visible-work notes provided below.",
@@ -817,8 +1030,15 @@ export class GeminiWorksheetService {
       "When handwriting is unclear, the page is partial, or the evidence is incomplete, use verdict='uncertain' or verdict='incomplete'.",
       "If you mention a misconception, keep it grounded in the visible work and avoid overclaiming.",
       "Keep every `studentFeedback` sentence warm, specific, and helpful for a young student.",
-      "`textFeedback` should be 2-3 specific sentences for the finished screen.",
-      "`voiceFeedback` should be 1-2 short sentences that can be read aloud exactly.",
+      isSpanish
+        ? "Return student-facing strings such as `studentFeedback`, `strengths`, `nextSteps`, `caution`, `textFeedback`, and `voiceFeedback` in Spanish."
+        : "Return student-facing strings such as `studentFeedback`, `strengths`, `nextSteps`, `caution`, `textFeedback`, and `voiceFeedback` in English.",
+      isSpanish
+        ? "`textFeedback` should be 2-3 specific sentences in Spanish for the finished screen."
+        : "`textFeedback` should be 2-3 specific sentences for the finished screen.",
+      isSpanish
+        ? "`voiceFeedback` should be 1-2 short sentences in Spanish that can be read aloud exactly."
+        : "`voiceFeedback` should be 1-2 short sentences that can be read aloud exactly.",
       worksheet.capturedPortionSummary
         ? `Visible portion summary: ${worksheet.capturedPortionSummary}`
         : "Visible portion summary: full worksheet appears visible.",
@@ -870,7 +1090,8 @@ export class GeminiWorksheetService {
   private normalizeFeedbackAnalysis(
     response: FeedbackAnalysisResponse,
     worksheet: CompletedWorksheetData,
-    deterministicInsights: ResponseInsight[]
+    deterministicInsights: ResponseInsight[],
+    language: PrototypeLanguage = this.defaultLanguage
   ): WorksheetFeedbackAnalysis {
     const insightsByRef = new Map(
       (response.responseInsights ?? [])
@@ -894,7 +1115,7 @@ export class GeminiWorksheetService {
       };
     });
 
-    const fallback = this.buildFallbackAnalysis(worksheet, responseInsights);
+    const fallback = this.buildFallbackAnalysis(worksheet, responseInsights, language);
     const strengths = this.normalizeStringArray(response.strengths).slice(0, 3);
     const nextSteps = this.normalizeStringArray(response.nextSteps).slice(0, 3);
 
@@ -910,8 +1131,10 @@ export class GeminiWorksheetService {
 
   private buildFallbackAnalysis(
     worksheet: CompletedWorksheetData,
-    responseInsights: ResponseInsight[]
+    responseInsights: ResponseInsight[],
+    language: PrototypeLanguage = this.defaultLanguage
   ): WorksheetFeedbackAnalysis {
+    const copy = getPrototypeCopy(language);
     const answeredCount = worksheet.responses.filter((response) => response.answered).length;
     const totalCount = worksheet.responses.length;
     const correctHighConfidence = responseInsights.filter(
@@ -922,34 +1145,34 @@ export class GeminiWorksheetService {
     );
     const showedWork = worksheet.responses.some((response) => Boolean(response.studentWorkDescription));
     const caution = !worksheet.isGradingSafe || worksheet.missingResponseAreas.length > 0
-      ? "Some parts of the worksheet were hard to read, so this feedback stays cautious."
+      ? copy.feedback.caution
       : undefined;
     const strengths = [
-      answeredCount > 0 ? `You worked on ${answeredCount} of ${totalCount} questions.` : "",
-      showedWork ? "You showed your thinking on the page." : "",
+      answeredCount > 0 ? this.workedOnQuestionsText(language, answeredCount, totalCount) : "",
+      showedWork ? this.showedThinkingText(language) : "",
       correctHighConfidence[0]?.studentFeedback ?? "",
     ].filter(Boolean);
     const nextSteps = [
       incorrectHighConfidence[0]?.studentFeedback ?? "",
-      caution ? "Keep your work dark and clear so it is easier to read next time." : "",
+      caution ? this.keepWorkClearText(language) : "",
     ].filter(Boolean);
 
     const textFeedback = [
       answeredCount > 0
-        ? `You completed ${answeredCount} of ${totalCount} questions and showed what you were thinking.`
-        : "You got started on the worksheet and showed me part of your thinking.",
+        ? this.completedQuestionsText(language, answeredCount, totalCount)
+        : copy.feedback.startedWork,
       incorrectHighConfidence[0]?.studentFeedback ||
         worksheet.feedback ||
-        "Keep checking each problem one step at a time.",
+        copy.feedback.fallbackAnalysisPrompt,
       caution || "",
     ].filter(Boolean).join(" ");
 
     const voiceFeedback = [
       answeredCount > 0
-        ? `You worked on ${answeredCount} of ${totalCount} questions and showed your thinking.`
-        : "You got started and showed me some of your work.",
+        ? this.workedOnQuestionsVoiceText(language, answeredCount, totalCount)
+        : this.startedVoiceText(language),
       incorrectHighConfidence[0]?.studentFeedback ||
-        "Keep checking each problem one careful step at a time.",
+        copy.feedback.fallbackNextStep,
     ].join(" ");
 
     return {
@@ -1143,8 +1366,10 @@ export class GeminiWorksheetService {
 
   private buildDeterministicInsights(
     worksheet: CompletedWorksheetData,
-    answerKey?: WorksheetQuestionContext[]
+    answerKey?: WorksheetQuestionContext[],
+    language: PrototypeLanguage = this.defaultLanguage
   ): ResponseInsight[] {
+    const copy = getPrototypeCopy(language);
     if (!answerKey?.length) {
       return worksheet.responses.map((response) => ({
         questionRef: response.questionRef,
@@ -1153,8 +1378,8 @@ export class GeminiWorksheetService {
         confidence: response.answered && response.legibility !== "unclear" ? "medium" : "low",
         evidence: response.studentWorkDescription || response.notes,
         studentFeedback: response.answered
-          ? "You showed your thinking here. Keep checking each step carefully."
-          : "Try to give this problem a try so I can see your thinking.",
+          ? copy.feedback.genericCoaching
+          : this.tryThisProblemText(language),
         teacherNote: response.notes,
       }));
     }
@@ -1173,9 +1398,9 @@ export class GeminiWorksheetService {
           expectedAnswer: question.expectedAnswer,
           verdict: "incomplete",
           confidence: "high",
-          evidence: "No clear student answer was extracted for this problem.",
-          studentFeedback: "You can come back to this problem and show your work one step at a time.",
-          teacherNote: "No completed response was extracted for this question.",
+          evidence: copy.feedback.incompleteEvidence,
+          studentFeedback: copy.feedback.incompleteStudentFeedback,
+          teacherNote: copy.feedback.incompleteTeacherNote,
         };
       }
 
@@ -1187,9 +1412,9 @@ export class GeminiWorksheetService {
           verdict: "uncertain",
           confidence: "low",
           likelyMisconception: question.misconceptionHints?.[0],
-          evidence: "The writing on this answer is too unclear to evaluate safely.",
-          studentFeedback: "I can see you worked on this one. Try writing the answer a little darker so it is easier to check.",
-          teacherNote: response.notes || "Legibility is too low for a safe correctness call.",
+          evidence: copy.feedback.unclearEvidence,
+          studentFeedback: copy.feedback.unclearStudentFeedback,
+          teacherNote: response.notes || copy.feedback.unclearTeacherNote,
         };
       }
 
@@ -1207,8 +1432,8 @@ export class GeminiWorksheetService {
           expectedAnswer: question.expectedAnswer,
           verdict: "correct",
           confidence,
-          evidence: `The extracted answer "${response.studentAnswer}" matches the expected answer "${question.expectedAnswer}".`,
-          studentFeedback: "Nice job checking this problem carefully and showing your work.",
+          evidence: copy.feedback.exactMatchEvidence(response.studentAnswer, question.expectedAnswer),
+          studentFeedback: copy.feedback.exactMatchStudentFeedback,
           teacherNote: response.studentWorkDescription,
         };
       }
@@ -1221,11 +1446,11 @@ export class GeminiWorksheetService {
         confidence: comparableAnswer ? confidence : "low",
         likelyMisconception: question.misconceptionHints?.[0],
         evidence: comparableAnswer
-          ? `The extracted answer "${response.studentAnswer}" does not match the expected answer "${question.expectedAnswer}".`
-          : "The extracted answer could not be matched to the expected answer confidently.",
+          ? copy.feedback.incorrectEvidence(response.studentAnswer, question.expectedAnswer)
+          : copy.feedback.unmatchedEvidence,
         studentFeedback: comparableAnswer
-          ? buildQuestionSpecificCoaching(question)
-          : "You showed your thinking here. Try checking the numbers one more careful step at a time.",
+          ? buildQuestionSpecificCoaching(question, language)
+          : copy.feedback.genericCoaching,
         teacherNote: response.studentWorkDescription || response.notes,
       };
     });
@@ -1315,10 +1540,10 @@ export class GeminiWorksheetService {
           questionRef: question.id,
           promptAnchor: question.prompt,
           studentAnswer: "",
-          studentWorkDescription: "No visible response was extracted for this prompt.",
+          studentWorkDescription: getPrototypeCopy(this.defaultLanguage).feedback.noResponseExtracted,
           answered: false,
           legibility: "unclear",
-          notes: "No response was extracted for this prompt.",
+          notes: getPrototypeCopy(this.defaultLanguage).feedback.noResponseNotes,
         });
       });
     });
@@ -1370,10 +1595,10 @@ export class GeminiWorksheetService {
         questionRef: question.questionRef,
         promptAnchor: question.prompt,
         studentAnswer: "",
-        studentWorkDescription: "No visible response was extracted for this prompt.",
+        studentWorkDescription: getPrototypeCopy(this.defaultLanguage).feedback.noResponseExtracted,
         answered: false,
         legibility: "unclear" as const,
-        notes: "No response was extracted for this prompt.",
+        notes: getPrototypeCopy(this.defaultLanguage).feedback.noResponseNotes,
       };
     });
 
@@ -1398,14 +1623,19 @@ function normalizeComparableAnswer(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9.-]+/g, "");
 }
 
-function buildQuestionSpecificCoaching(question: WorksheetQuestionContext): string {
+function buildQuestionSpecificCoaching(
+  question: WorksheetQuestionContext,
+  language: PrototypeLanguage
+): string {
+  const copy = getPrototypeCopy(language).feedback;
+
   if (question.questionRef === "Q1.1") {
-    return "You showed your work here. Check the tens and ones again to make sure they add up to the total.";
+    return copy.coachingQ11;
   }
 
   if (question.questionRef === "Q1.2") {
-    return "You are close. Solve the addition first, then write that total in the blank on the left side.";
+    return copy.coachingQ12;
   }
 
-  return "You showed your thinking here. Try checking the numbers one more careful step at a time.";
+  return copy.genericCoaching;
 }
